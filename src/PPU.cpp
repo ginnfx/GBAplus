@@ -10,6 +10,8 @@ constexpr uint32_t REG_DISPSTAT = 0x04000004;
 constexpr uint32_t REG_VCOUNT   = 0x04000006;
 constexpr uint32_t REG_BG0CNT   = 0x04000008;
 constexpr uint32_t REG_BG0HOFS  = 0x04000010;
+constexpr uint32_t REG_BG2PA    = 0x04000020;  // BG3 set at +0x10
+constexpr uint32_t REG_BG2X     = 0x04000028;
 
 constexpr uint16_t DISPSTAT_VBLANK     = 1u << 0;
 constexpr uint16_t DISPSTAT_HBLANK     = 1u << 1;
@@ -64,7 +66,13 @@ void PPU::renderScanline(int line) {
     const uint16_t mode = bus.read16(REG_DISPCNT) & 0x7;
     switch (mode) {
         case 0:
-            renderMode0(line);
+            renderTiledLine(line, 0xF, 0x0);
+            break;
+        case 1:
+            renderTiledLine(line, 0x3, 0x4);
+            break;
+        case 2:
+            renderTiledLine(line, 0x0, 0xC);
             break;
         case 3:
             renderMode3(line);
@@ -126,8 +134,10 @@ void PPU::renderMode4(int line) {
     }
 }
 
-// Mode 0: up to four text (tiled) backgrounds plus sprites.
-void PPU::renderMode0(int line) {
+// Modes 0-2: tiled backgrounds plus sprites. The masks say which BGs are
+// text and which are affine in the current video mode; a BG still needs
+// its DISPCNT enable bit either way.
+void PPU::renderTiledLine(int line, unsigned textMask, unsigned affineMask) {
     const uint16_t dispcnt = bus.read16(REG_DISPCNT);
 
     uint32_t colors[SCREEN_WIDTH];
@@ -150,7 +160,11 @@ void PPU::renderMode0(int line) {
             if ((cnt & 3) != priority) {
                 continue;
             }
-            renderBackgroundLine(bg, line, priority, colors, priorities);
+            if (affineMask & (1u << bg)) {
+                renderAffineLine(bg, priority, colors, priorities);
+            } else if (textMask & (1u << bg)) {
+                renderBackgroundLine(bg, line, priority, colors, priorities);
+            }
         }
     }
 
@@ -222,6 +236,71 @@ void PPU::renderBackgroundLine(int bg, int line, int priority,
         }
         colors[x] = paletteColor(colorIndex);
         priorities[x] = priority;
+    }
+}
+
+// Affine BG: starting from the line's internal reference accumulator,
+// the texture coordinate advances by the PA/PC matrix column per screen
+// pixel. Affine maps differ from text maps: one byte per entry, always
+// 8bpp tiles, and square sizes of 128/256/512/1024 pixels.
+void PPU::renderAffineLine(int bg, int priority, uint32_t* colors,
+                           int* priorities) {
+    const uint16_t cnt =
+        bus.read16(REG_BG0CNT + static_cast<uint32_t>(bg) * 2);
+    const uint32_t charBase = VRAM_BASE + ((cnt >> 2) & 3) * 0x4000;
+    const uint32_t screenBase = VRAM_BASE + ((cnt >> 8) & 0x1F) * 0x800;
+    const bool wrap = cnt & (1u << 13);
+    const uint32_t sizeTiles = 16u << ((cnt >> 14) & 3);
+    const int sizePx = static_cast<int>(sizeTiles) * 8;
+
+    const uint32_t matrix =
+        REG_BG2PA + static_cast<uint32_t>(bg - 2) * 0x10;
+    const int32_t pa = static_cast<int16_t>(bus.read16(matrix));
+    const int32_t pc = static_cast<int16_t>(bus.read16(matrix + 4));
+
+    int32_t cx = affineX[bg - 2];
+    int32_t cy = affineY[bg - 2];
+    for (int x = 0; x < SCREEN_WIDTH; ++x, cx += pa, cy += pc) {
+        int tx = cx >> 8;
+        int ty = cy >> 8;
+        if (wrap) {
+            tx &= sizePx - 1;
+            ty &= sizePx - 1;
+        } else if (tx < 0 || ty < 0 || tx >= sizePx || ty >= sizePx) {
+            continue;  // overflow bit clear: outside the map is transparent
+        }
+        const uint8_t tile = bus.read8(
+            screenBase + static_cast<uint32_t>(ty >> 3) * sizeTiles +
+            static_cast<uint32_t>(tx >> 3));
+        const uint32_t colorIndex = bus.read8(
+            charBase + tile * 64u +
+            static_cast<uint32_t>((ty & 7) * 8 + (tx & 7)));
+        if (colorIndex == 0) {
+            continue;
+        }
+        colors[x] = paletteColor(colorIndex);
+        priorities[x] = priority;
+    }
+}
+
+// BG2X/Y and BG3X/Y are 28-bit signed 19.8 fixed point. They reload the
+// internal accumulators once per frame; the renderer never reads them
+// directly, so a mid-frame write waits for the next frame while PB/PD
+// keep accumulating from the latched origin.
+void PPU::latchAffineReferences() {
+    for (int i = 0; i < 2; ++i) {
+        const uint32_t ref = REG_BG2X + static_cast<uint32_t>(i) * 0x10;
+        affineX[i] = static_cast<int32_t>(bus.read32(ref) << 4) >> 4;
+        affineY[i] = static_cast<int32_t>(bus.read32(ref + 4) << 4) >> 4;
+    }
+}
+
+void PPU::advanceAffineReferences() {
+    for (int i = 0; i < 2; ++i) {
+        const uint32_t matrix =
+            REG_BG2PA + static_cast<uint32_t>(i) * 0x10;
+        affineX[i] += static_cast<int16_t>(bus.read16(matrix + 2));  // PB
+        affineY[i] += static_cast<int16_t>(bus.read16(matrix + 6));  // PD
     }
 }
 
@@ -324,7 +403,11 @@ void PPU::step(int cycles) {
             const uint16_t stat = bus.read16(REG_DISPSTAT);
             bus.writeIODirect16(REG_DISPSTAT, stat | DISPSTAT_HBLANK);
             if (vcount < LINES_VISIBLE) {
+                if (vcount == 0) {
+                    latchAffineReferences();
+                }
                 renderScanline(vcount);
+                advanceAffineReferences();
                 bus.notifyHBlank();  // HBlank-timed DMA (visible lines only)
             }
             if (stat & DISPSTAT_HBLANK_IRQ) {

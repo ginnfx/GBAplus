@@ -39,11 +39,22 @@ public:
 
 private:
     void renderScanline(int line);
-    void renderMode0(int line);
     void renderMode3(int line);
     void renderMode4(int line);
+    // Shared compositor for the tiled modes: text and affine layers are
+    // drawn priority-ordered into the line buffers, then sprites.
+    void renderTiledLine(int line, unsigned textMask, unsigned affineMask);
     void renderBackgroundLine(int bg, int line, int priority,
                               uint32_t* colors, int* priorities);
+    void renderAffineLine(int bg, int priority, uint32_t* colors,
+                          int* priorities);
+
+    // Affine reference-point handling: the BG2X/Y (BG3X/Y) registers are
+    // latched into internal accumulators when line 0 starts, then advanced
+    // by PB/PD after every rendered scanline. Mid-frame register writes
+    // do not take effect until the next frame.
+    void latchAffineReferences();
+    void advanceAffineReferences();
     void renderSpritesLine(int line, uint32_t* colors,
                            const int* priorities);
 
@@ -55,6 +66,8 @@ private:
 
     int cycleCounter = 0;  // position within the current scanline
     int vcount = 0;
+    int32_t affineX[2]{};  // internal BG2/BG3 reference accumulators, 19.8
+    int32_t affineY[2]{};
     bool inHBlank = false;
     bool frameDone = false;
 };
