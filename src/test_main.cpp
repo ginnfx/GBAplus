@@ -374,6 +374,78 @@ void testFlashBackup(Bus& bus) {
           bus.read8(0x0E001234));
 }
 
+// EEPROM backup: serial bitstream protocol on 0x0D with both address
+// widths, detected from the request stream length.
+void testEEPROMBackup(Bus& bus) {
+    std::printf("Test: EEPROM backup\n");
+
+    const std::string romPath = "/tmp/gba_emu_eeprom_test.gba";
+    {
+        std::FILE* f = std::fopen(romPath.c_str(), "wb");
+        const char pad[16] = {};
+        std::fwrite(pad, 1, sizeof(pad), f);
+        std::fwrite("EEPROM_V124", 1, 11, f);
+        std::fclose(f);
+    }
+
+    auto sendBits = [](Bus& b, uint64_t value, int count) {
+        for (int i = count - 1; i >= 0; --i) {
+            b.write16(0x0D000000, static_cast<uint16_t>((value >> i) & 1));
+        }
+    };
+    auto readBlock = [](Bus& b) {
+        for (int i = 0; i < 4; ++i) {
+            b.read16(0x0D000000);  // dummy bits
+        }
+        uint64_t v = 0;
+        for (int i = 0; i < 64; ++i) {
+            v = (v << 1) | (b.read16(0x0D000000) & 1);
+        }
+        return v;
+    };
+
+    CHECK(bus.loadROM(romPath) &&
+              bus.backupType() == Bus::BackupType::EEPROM,
+          "EEPROM_V detected");
+
+    // 512-byte chip (6-bit addressing): write block 5, read it back.
+    sendBits(bus, 0b10, 2);                 // write request
+    sendBits(bus, 5, 6);                    // block address
+    sendBits(bus, 0xA1B2C3D4E5F60718, 64);  // data
+    sendBits(bus, 0, 1);                    // terminator
+    CHECK(bus.read16(0x0D000000) & 1, "ready after write");
+
+    sendBits(bus, 0b11, 2);  // read request
+    sendBits(bus, 5, 6);
+    sendBits(bus, 0, 1);
+    const uint64_t value = readBlock(bus);
+    CHECK(value == 0xA1B2C3D4E5F60718,
+          "6-bit round trip (got 0x%016llX)",
+          static_cast<unsigned long long>(value));
+
+    sendBits(bus, 0b11, 2);  // untouched block reads erased
+    sendBits(bus, 9, 6);
+    sendBits(bus, 0, 1);
+    CHECK(readBlock(bus) == 0xFFFFFFFFFFFFFFFF, "untouched block is 0xFF");
+
+    // 8 KiB chip (14-bit addressing) on a fresh Bus.
+    Bus big;
+    big.loadROM(romPath);
+    std::remove(romPath.c_str());
+    sendBits(big, 0b10, 2);
+    sendBits(big, 700, 14);
+    sendBits(big, 0x123456789ABCDEF0, 64);
+    sendBits(big, 0, 1);
+    big.read16(0x0D000000);  // commit
+    sendBits(big, 0b11, 2);
+    sendBits(big, 700, 14);
+    sendBits(big, 0, 1);
+    const uint64_t bigValue = readBlock(big);
+    CHECK(bigValue == 0x123456789ABCDEF0,
+          "14-bit round trip (got 0x%016llX)",
+          static_cast<unsigned long long>(bigValue));
+}
+
 // ARM single data transfer: pre-index with writeback, post-index, byte ops.
 void testARMSingleDataTransfer(Bus& bus) {
     std::printf("Test: ARM LDR/STR\n");
@@ -1015,6 +1087,10 @@ int main() {
     {
         Bus bus;
         testFlashBackup(bus);
+    }
+    {
+        Bus bus;
+        testEEPROMBackup(bus);
     }
     {
         Bus bus;

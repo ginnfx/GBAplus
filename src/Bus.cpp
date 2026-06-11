@@ -59,7 +59,7 @@ uint32_t Bus::mirrorVRAM(uint32_t addr) {
     return offset;
 }
 
-uint8_t Bus::read8(uint32_t addr) const {
+uint8_t Bus::read8(uint32_t addr) {
     switch (addr >> 24) {
         case 0x00:
             // BIOS is not mirrored; reads past 16 KiB are unmapped.
@@ -84,12 +84,16 @@ uint8_t Bus::read8(uint32_t addr) const {
             return vram[mirrorVRAM(addr)];
         case 0x07:
             return oam[addr & (OAM_SIZE - 1)];
+        case 0x0D:
+            if (backup == BackupType::EEPROM) {
+                return eepromReadBit(addr);
+            }
+            [[fallthrough]];
         case 0x08:
         case 0x09:
         case 0x0A:
         case 0x0B:
-        case 0x0C:
-        case 0x0D: {
+        case 0x0C: {
             uint32_t offset = addr & (ROM_MAX - 1);
             if (offset < rom.size()) {
                 return rom[offset];
@@ -108,13 +112,13 @@ uint8_t Bus::read8(uint32_t addr) const {
 
 // 16/32-bit accesses are composed from byte reads in little-endian order.
 // The GBA bus force-aligns addresses, so we mask off the low bits here.
-uint16_t Bus::read16(uint32_t addr) const {
+uint16_t Bus::read16(uint32_t addr) {
     addr &= ~1u;
     return static_cast<uint16_t>(read8(addr)) |
            static_cast<uint16_t>(read8(addr + 1)) << 8;
 }
 
-uint32_t Bus::read32(uint32_t addr) const {
+uint32_t Bus::read32(uint32_t addr) {
     addr &= ~3u;
     return static_cast<uint32_t>(read16(addr)) |
            static_cast<uint32_t>(read16(addr + 2)) << 16;
@@ -175,13 +179,18 @@ void Bus::write8(uint32_t addr, uint8_t value) {
         case 0x0F:
             backupWrite(addr, value);
             return;
+        case 0x0D:
+            if (backup == BackupType::EEPROM) {
+                eepromWriteBit(addr, value);
+                return;
+            }
+            [[fallthrough]];
         case 0x00:
         case 0x08:
         case 0x09:
         case 0x0A:
         case 0x0B:
         case 0x0C:
-        case 0x0D:
             TRACE_LOG("ignored write8 to read-only region 0x%08X", addr);
             return;
         default:
@@ -326,6 +335,95 @@ void Bus::flashWrite(uint32_t offset, uint8_t value) {
     flashState = FlashState::Ready;
 }
 
+// EEPROM serial protocol. Each halfword the game DMAs in contributes one
+// bit (bit 0 of the low byte); responses are clocked out one bit per read.
+// Read request:  1 1 <addr> 0, answered by 68 read bits (4 dummy + 64 data
+// MSB-first). Write request: 1 0 <addr> <64 data bits> 0; the game then
+// polls until a read returns 1 (we are ready instantly).
+void Bus::eepromWriteBit(uint32_t addr, uint8_t value) {
+    if (addr & 1) {
+        return;  // the bit lives in the low byte of each halfword
+    }
+    eepromReadActive = false;  // a new request cancels any pending readout
+    eepromBits.push_back(value & 1);
+}
+
+uint8_t Bus::eepromReadBit(uint32_t addr) {
+    if (addr & 1) {
+        return 0;
+    }
+    if (!eepromReadActive && !eepromBits.empty()) {
+        eepromInterpretRequest();
+    }
+    if (eepromReadActive) {
+        const int pos = eepromReadPos++;
+        if (eepromReadPos >= 68) {
+            eepromReadActive = false;
+        }
+        if (pos < 4) {
+            return 0;  // dummy bits ahead of the data
+        }
+        return static_cast<uint8_t>(
+            (eepromReadValue >> (63 - (pos - 4))) & 1);
+    }
+    return 1;  // idle / write completed: report ready
+}
+
+// Locks in the address width the first time a well-formed request reveals
+// it, sizing the backing store to match (64 or 1024 8-byte blocks).
+void Bus::eepromSetAddrBits(int addrBits) {
+    if (eepromAddrBits == 0) {
+        eepromAddrBits = addrBits;
+        backupMem.resize(addrBits == 6 ? 512 : 0x2000, 0xFF);
+        TRACE_LOG("EEPROM sized: %d-bit addressing", addrBits);
+    }
+}
+
+void Bus::eepromInterpretRequest() {
+    const std::vector<uint8_t> bits = std::move(eepromBits);
+    eepromBits.clear();
+    const int len = static_cast<int>(bits.size());
+    if (len < 3 || bits[0] != 1) {
+        TRACE_LOG("EEPROM: malformed %d-bit request", len);
+        return;
+    }
+
+    // Address width from the stream length: reads are 2+addr+1 bits,
+    // writes 2+addr+64+1.
+    const int addrBits = bits[1] ? len - 3 : len - 67;
+    if (addrBits != 6 && addrBits != 14) {
+        TRACE_LOG("EEPROM: bad request length %d", len);
+        return;
+    }
+    eepromSetAddrBits(addrBits);
+
+    uint32_t block = 0;
+    for (int i = 0; i < addrBits; ++i) {
+        block = (block << 1) | bits[2 + i];
+    }
+    block &= (backupMem.size() / 8) - 1;
+
+    if (bits[1]) {  // read request: latch the block for the 68-bit answer
+        eepromReadValue = 0;
+        for (int i = 0; i < 8; ++i) {
+            eepromReadValue =
+                (eepromReadValue << 8) | backupMem[block * 8 + i];
+        }
+        eepromReadActive = true;
+        eepromReadPos = 0;
+    } else {  // write request: store the 64 data bits
+        uint64_t value = 0;
+        for (int i = 0; i < 64; ++i) {
+            value = (value << 1) | bits[2 + addrBits + i];
+        }
+        for (int i = 0; i < 8; ++i) {
+            backupMem[block * 8 + i] =
+                static_cast<uint8_t>(value >> (8 * (7 - i)));
+        }
+        sramWritten = true;
+    }
+}
+
 // Scans the ROM for the backup ID strings the official SDK embeds.
 void Bus::detectBackupType() {
     auto contains = [this](const char* id) {
@@ -345,8 +443,11 @@ void Bus::detectBackupType() {
         backupMem.assign(0x10000, 0xFF);
     } else if (contains("EEPROM_V")) {
         backup = BackupType::EEPROM;
-        backupMem.assign(SRAM_SIZE, 0);
-        TRACE_LOG("EEPROM cartridge detected; not yet emulated");
+        // 8 KiB until the first request reveals the address width.
+        backupMem.assign(0x2000, 0xFF);
+        eepromAddrBits = 0;
+        eepromBits.clear();
+        eepromReadActive = false;
     } else {
         backup = BackupType::SRAM;  // explicit SRAM_V or no ID at all
         backupMem.assign(SRAM_SIZE, 0);
