@@ -273,6 +273,108 @@ void testMode0AndSprites(Bus& bus) {
           fb[20 * 240]);
 }
 
+void testAffineBackground(Bus& bus) {
+    std::printf("Test: affine backgrounds\n");
+    PPU ppu(bus);
+
+    bus.write16(0x04000000, 0x0402);
+    bus.write16(0x0400000C, 0x0800);
+
+    bus.write16(0x05000000, 0x7C00);
+    bus.write16(0x05000002, 0x001F);
+    bus.write16(0x05000004, 0x03E0);
+
+    for (uint32_t i = 0; i < 64; ++i) {
+        bus.write8(0x06000000 + 64 + i, 0x01);
+        bus.write8(0x06000000 + 128 + i, 0x02);
+    }
+    bus.write8(0x06004000, 0x01);
+    bus.write8(0x06004001, 0x02);
+
+    auto setMatrix = [&bus](uint16_t pa, uint16_t pb, uint16_t pc,
+                            uint16_t pd, uint32_t x0, uint32_t y0) {
+        bus.write16(0x04000020, pa);
+        bus.write16(0x04000022, pb);
+        bus.write16(0x04000024, pc);
+        bus.write16(0x04000026, pd);
+        bus.write32(0x04000028, x0);
+        bus.write32(0x0400002C, y0);
+    };
+    auto frame = [&ppu] {
+        ppu.step(PPU::CYCLES_SCANLINE * PPU::LINES_TOTAL);
+        ppu.frameReady();
+    };
+    const auto& fb = ppu.framebuffer();
+
+    setMatrix(0x100, 0, 0, 0x100, 0, 0);
+    frame();
+    CHECK(fb[0] == 0xFF0000FF, "identity: (0,0) red (got 0x%08X)", fb[0]);
+    CHECK(fb[8] == 0x00FF00FF, "identity: (8,0) green (got 0x%08X)", fb[8]);
+    CHECK(fb[16] == 0x0000FFFF, "identity: (16,0) backdrop (got 0x%08X)",
+          fb[16]);
+
+    setMatrix(0x200, 0, 0, 0x100, 0, 0);
+    frame();
+    CHECK(fb[3] == 0xFF0000FF, "scale: (3,0) tx=6 red (got 0x%08X)", fb[3]);
+    CHECK(fb[4] == 0x00FF00FF, "scale: (4,0) tx=8 green (got 0x%08X)",
+          fb[4]);
+    CHECK(fb[8] == 0x0000FFFF, "scale: (8,0) tx=16 backdrop (got 0x%08X)",
+          fb[8]);
+
+    setMatrix(0, 0xFF00, 0x100, 0, 7u << 8, 0);
+    frame();
+    CHECK(fb[0] == 0xFF0000FF, "rotate: (0,0) red (got 0x%08X)", fb[0]);
+    CHECK(fb[8] == 0x0000FFFF, "rotate: (8,0) ty=8 backdrop (got 0x%08X)",
+          fb[8]);
+    CHECK(fb[8 * 240] == 0x0000FFFF,
+          "rotate: (0,8) tx=-1 backdrop (got 0x%08X)", fb[8 * 240]);
+
+    setMatrix(0x100, 0, 0, 0x100, 128u << 8, 0);
+    frame();
+    CHECK(fb[0] == 0x0000FFFF,
+          "overflow clear: (0,0) transparent (got 0x%08X)", fb[0]);
+    bus.write16(0x0400000C, 0x2800);
+    frame();
+    CHECK(fb[0] == 0xFF0000FF, "overflow wrap: (0,0) red (got 0x%08X)",
+          fb[0]);
+    CHECK(fb[8] == 0x00FF00FF, "overflow wrap: (8,0) green (got 0x%08X)",
+          fb[8]);
+
+    bus.write16(0x0400000C, 0x0800);
+    setMatrix(0x100, 0, 0, 0x100, 0, 0);
+    ppu.step(PPU::CYCLES_SCANLINE);
+    bus.write32(0x04000028, 64u << 8);
+    ppu.step(PPU::CYCLES_SCANLINE * (PPU::LINES_TOTAL - 1));
+    ppu.frameReady();
+    CHECK(fb[240] == 0xFF0000FF,
+          "mid-frame BG2X write: line 1 unmoved (got 0x%08X)", fb[240]);
+    CHECK(fb[5 * 240] == 0xFF0000FF,
+          "mid-frame BG2X write: line 5 unmoved (got 0x%08X)",
+          fb[5 * 240]);
+    frame();
+    CHECK(fb[0] == 0x0000FFFF,
+          "next frame picks up the new BG2X (got 0x%08X)", fb[0]);
+
+    bus.write16(0x04000000, 0x0802);
+    bus.write16(0x0400000E, 0x0800);
+    bus.write16(0x04000030, 0x100);
+    bus.write16(0x04000032, 0);
+    bus.write16(0x04000034, 0);
+    bus.write16(0x04000036, 0x100);
+    bus.write32(0x04000038, 0);
+    bus.write32(0x0400003C, 0);
+    frame();
+    CHECK(fb[0] == 0xFF0000FF, "mode 2 BG3: (0,0) red (got 0x%08X)", fb[0]);
+
+    bus.write16(0x04000000, 0x0C01);
+    bus.write16(0x0400000C, 0x0801);
+    bus.write32(0x04000028, 0);
+    bus.write32(0x04000038, 8u << 8);
+    frame();
+    CHECK(fb[0] == 0xFF0000FF, "mode 1: BG3 ignored, BG2 red (got 0x%08X)",
+          fb[0]);
+}
+
 void testSRAMPersistence(Bus& bus) {
     std::printf("Test: SRAM persistence\n");
 
@@ -1000,6 +1102,10 @@ int main() {
     {
         Bus bus;
         testMode0AndSprites(bus);
+    }
+    {
+        Bus bus;
+        testAffineBackground(bus);
     }
     {
         Bus bus;
