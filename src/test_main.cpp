@@ -591,6 +591,77 @@ void testObjWindow(Bus& bus) {
           at(50, 50));
 }
 
+void testBlending(Bus& bus) {
+    std::printf("Test: blending\n");
+    PPU ppu(bus);
+
+    bus.write16(0x04000008, 0x0800);
+    bus.write16(0x0400000A, 0x0901);
+    bus.write16(0x05000000, 0x0000);
+    bus.write16(0x05000002, 0x001F);
+    bus.write16(0x05000004, 0x7C00);
+    bus.write16(0x05000206, 0x7C00);
+
+    for (uint32_t i = 0; i < 32; ++i) {
+        bus.write8(0x06000000 + 32 + i, 0x11);
+        bus.write8(0x06000000 + 64 + i, 0x22);
+        bus.write8(0x06010000 + 2 * 32 + i, 0x33);
+    }
+    for (uint32_t i = 0; i < 1024; ++i) {
+        bus.write16(0x06004000 + i * 2, 0x0001);
+        bus.write16(0x06004800 + i * 2, 0x0002);
+    }
+
+    auto frame = [&ppu] {
+        ppu.step(PPU::CYCLES_SCANLINE * PPU::LINES_TOTAL);
+        ppu.frameReady();
+    };
+    const auto& fb = ppu.framebuffer();
+
+    bus.write16(0x04000050, 0x0241);
+    bus.write16(0x04000052, 0x0808);
+    bus.write16(0x04000000, 0x0300);
+    frame();
+    CHECK(fb[0] == 0x7B007BFF, "alpha (red*0.5 + blue*0.5) (got 0x%08X)",
+          fb[0]);
+
+    bus.write16(0x04000050, 0x0081);
+    bus.write16(0x04000054, 0x0008);
+    bus.write16(0x04000000, 0x0100);
+    frame();
+    CHECK(fb[0] == 0xFF7B7BFF, "brighten red toward white (got 0x%08X)",
+          fb[0]);
+
+    bus.write16(0x04000050, 0x00C1);
+    frame();
+    CHECK(fb[0] == 0x840000FF, "darken red toward black (got 0x%08X)", fb[0]);
+
+    bus.write16(0x04000050, 0x0081);
+    bus.write16(0x04000040, 0x0078);
+    bus.write16(0x04000044, 0x00A0);
+    bus.write16(0x04000048, 0x0001);
+    bus.write16(0x0400004A, 0x0021);
+    bus.write16(0x04000000, 0x2100);
+    frame();
+    CHECK(fb[10] == 0xFF0000FF, "inside WIN0: effects off, raw red (got "
+          "0x%08X)", fb[10]);
+    CHECK(fb[200] == 0xFF7B7BFF, "outside WIN0: effects on, brightened (got "
+          "0x%08X)", fb[200]);
+
+    bus.write16(0x04000040, 0x0000);
+    bus.write16(0x04000044, 0x0000);
+    bus.write16(0x07000000, 0x0400);
+    bus.write16(0x07000002, 0x0000);
+    bus.write16(0x07000004, 0x0002);
+    bus.write16(0x04000050, 0x0100);
+    bus.write16(0x04000052, 0x0808);
+    bus.write16(0x0400000A, 0x0801);
+    bus.write16(0x04000000, 0x1100);
+    frame();
+    CHECK(fb[0] == 0x7B007BFF,
+          "semi-transparent sprite alpha over BG0 (got 0x%08X)", fb[0]);
+}
+
 void testSRAMPersistence(Bus& bus) {
     std::printf("Test: SRAM persistence\n");
 
@@ -1334,6 +1405,10 @@ int main() {
     {
         Bus bus;
         testObjWindow(bus);
+    }
+    {
+        Bus bus;
+        testBlending(bus);
     }
     {
         Bus bus;
