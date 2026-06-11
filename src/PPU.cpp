@@ -11,6 +11,12 @@ constexpr uint32_t REG_BG0CNT   = 0x04000008;
 constexpr uint32_t REG_BG0HOFS  = 0x04000010;
 constexpr uint32_t REG_BG2PA    = 0x04000020;
 constexpr uint32_t REG_BG2X     = 0x04000028;
+constexpr uint32_t REG_WIN0H    = 0x04000040;
+constexpr uint32_t REG_WIN0V    = 0x04000044;
+constexpr uint32_t REG_WIN1H    = 0x04000042;
+constexpr uint32_t REG_WIN1V    = 0x04000046;
+constexpr uint32_t REG_WININ    = 0x04000048;
+constexpr uint32_t REG_WINOUT   = 0x0400004A;
 
 constexpr uint16_t DISPSTAT_VBLANK     = 1u << 0;
 constexpr uint16_t DISPSTAT_HBLANK     = 1u << 1;
@@ -21,6 +27,9 @@ constexpr uint16_t DISPSTAT_VCOUNT_IRQ = 1u << 5;
 
 constexpr uint16_t DISPCNT_OBJ_1D  = 1u << 6;
 constexpr uint16_t DISPCNT_OBJ_ON  = 1u << 12;
+constexpr uint16_t DISPCNT_WIN0    = 1u << 13;
+constexpr uint16_t DISPCNT_WIN1    = 1u << 14;
+constexpr uint16_t DISPCNT_OBJWIN  = 1u << 15;
 
 constexpr uint32_t VRAM_BASE     = 0x06000000;
 constexpr uint32_t VRAM_OBJ_BASE = 0x06010000;
@@ -118,7 +127,7 @@ void PPU::renderMode4(int line) {
     }
 
     if (dispcnt & DISPCNT_OBJ_ON) {
-        renderSpritesLine(line, colors, priorities);
+        renderSpritesLine(line, colors, priorities, nullptr);
     }
 
     for (int x = 0; x < SCREEN_WIDTH; ++x) {
@@ -137,6 +146,10 @@ void PPU::renderTiledLine(int line, unsigned textMask, unsigned affineMask) {
         priorities[x] = PRIORITY_BACKDROP;
     }
 
+    uint8_t winMaskBuf[SCREEN_WIDTH];
+    const uint8_t* winMask =
+        computeWindowMask(line, winMaskBuf) ? winMaskBuf : nullptr;
+
     for (int priority = 3; priority >= 0; --priority) {
         for (int bg = 3; bg >= 0; --bg) {
             if (!(dispcnt & (1u << (8 + bg)))) {
@@ -148,15 +161,16 @@ void PPU::renderTiledLine(int line, unsigned textMask, unsigned affineMask) {
                 continue;
             }
             if (affineMask & (1u << bg)) {
-                renderAffineLine(bg, priority, colors, priorities);
+                renderAffineLine(bg, priority, colors, priorities, winMask);
             } else if (textMask & (1u << bg)) {
-                renderBackgroundLine(bg, line, priority, colors, priorities);
+                renderBackgroundLine(bg, line, priority, colors, priorities,
+                                     winMask);
             }
         }
     }
 
     if (dispcnt & DISPCNT_OBJ_ON) {
-        renderSpritesLine(line, colors, priorities);
+        renderSpritesLine(line, colors, priorities, winMask);
     }
 
     for (int x = 0; x < SCREEN_WIDTH; ++x) {
@@ -165,7 +179,8 @@ void PPU::renderTiledLine(int line, unsigned textMask, unsigned affineMask) {
 }
 
 void PPU::renderBackgroundLine(int bg, int line, int priority,
-                               uint32_t* colors, int* priorities) {
+                               uint32_t* colors, int* priorities,
+                               const uint8_t* winMask) {
     const uint16_t cnt =
         bus.read16(REG_BG0CNT + static_cast<uint32_t>(bg) * 2);
     const uint32_t charBase = VRAM_BASE + ((cnt >> 2) & 3) * 0x4000;
@@ -219,13 +234,16 @@ void PPU::renderBackgroundLine(int bg, int line, int priority,
         if (colorIndex == 0) {
             continue;
         }
+        if (winMask && !(winMask[x] & (1u << bg))) {
+            continue;
+        }
         colors[x] = paletteColor(colorIndex);
         priorities[x] = priority;
     }
 }
 
 void PPU::renderAffineLine(int bg, int priority, uint32_t* colors,
-                           int* priorities) {
+                           int* priorities, const uint8_t* winMask) {
     const uint16_t cnt =
         bus.read16(REG_BG0CNT + static_cast<uint32_t>(bg) * 2);
     const uint32_t charBase = VRAM_BASE + ((cnt >> 2) & 3) * 0x4000;
@@ -259,6 +277,9 @@ void PPU::renderAffineLine(int bg, int priority, uint32_t* colors,
         if (colorIndex == 0) {
             continue;
         }
+        if (winMask && !(winMask[x] & (1u << bg))) {
+            continue;
+        }
         colors[x] = paletteColor(colorIndex);
         priorities[x] = priority;
     }
@@ -281,8 +302,51 @@ void PPU::advanceAffineReferences() {
     }
 }
 
+bool PPU::computeWindowMask(int line, uint8_t* mask) const {
+    const uint16_t dispcnt = bus.read16(REG_DISPCNT);
+    const bool win0 = dispcnt & DISPCNT_WIN0;
+    const bool win1 = dispcnt & DISPCNT_WIN1;
+    const bool objwin = dispcnt & DISPCNT_OBJWIN;
+    if (!win0 && !win1 && !objwin) {
+        return false;
+    }
+
+    const uint16_t winin = bus.read16(REG_WININ);
+    const uint16_t winout = bus.read16(REG_WINOUT);
+    const uint8_t in0 = winin & 0x3F;
+    const uint8_t in1 = (winin >> 8) & 0x3F;
+    const uint8_t out = winout & 0x3F;
+
+    auto edges = [](uint16_t v, int& lo, int& hi) {
+        lo = (v >> 8) & 0xFF;
+        hi = v & 0xFF;
+    };
+    auto inside = [](int p, int lo, int hi) {
+        return lo <= hi ? (p >= lo && p < hi) : (p >= lo || p < hi);
+    };
+
+    int x0lo, x0hi, y0lo, y0hi, x1lo, x1hi, y1lo, y1hi;
+    edges(bus.read16(REG_WIN0H), x0lo, x0hi);
+    edges(bus.read16(REG_WIN0V), y0lo, y0hi);
+    edges(bus.read16(REG_WIN1H), x1lo, x1hi);
+    edges(bus.read16(REG_WIN1V), y1lo, y1hi);
+    const bool on0 = win0 && inside(line, y0lo, y0hi);
+    const bool on1 = win1 && inside(line, y1lo, y1hi);
+
+    for (int x = 0; x < SCREEN_WIDTH; ++x) {
+        if (on0 && inside(x, x0lo, x0hi)) {
+            mask[x] = in0;
+        } else if (on1 && inside(x, x1lo, x1hi)) {
+            mask[x] = in1;
+        } else {
+            mask[x] = out;
+        }
+    }
+    return true;
+}
+
 void PPU::renderSpritesLine(int line, uint32_t* colors,
-                            const int* priorities) {
+                            const int* priorities, const uint8_t* winMask) {
     const bool map1D = bus.read16(REG_DISPCNT) & DISPCNT_OBJ_1D;
 
     for (int obj = 127; obj >= 0; --obj) {
@@ -343,6 +407,9 @@ void PPU::renderSpritesLine(int line, uint32_t* colors,
         for (int i = 0; i < boxW; ++i) {
             const int sx = x0 + i;
             if (sx < 0 || sx >= SCREEN_WIDTH) {
+                continue;
+            }
+            if (winMask && !(winMask[sx] & (1u << 4))) {
                 continue;
             }
             if (priority > priorities[sx]) {

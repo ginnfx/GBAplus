@@ -35,14 +35,17 @@ private:
     void renderMode4(int line);
     void renderTiledLine(int line, unsigned textMask, unsigned affineMask);
     void renderBackgroundLine(int bg, int line, int priority,
-                              uint32_t* colors, int* priorities);
+                              uint32_t* colors, int* priorities,
+                              const uint8_t* winMask);
     void renderAffineLine(int bg, int priority, uint32_t* colors,
-                          int* priorities);
+                          int* priorities, const uint8_t* winMask);
+
+    bool computeWindowMask(int line, uint8_t* mask) const;
 
     void latchAffineReferences();
     void advanceAffineReferences();
     void renderSpritesLine(int line, uint32_t* colors,
-                           const int* priorities);
+                           const int* priorities, const uint8_t* winMask);
 
     uint32_t paletteColor(uint32_t index) const;
     uint32_t objPaletteColor(uint32_t index) const;
