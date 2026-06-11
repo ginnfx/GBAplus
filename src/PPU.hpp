@@ -45,9 +45,16 @@ private:
     // drawn priority-ordered into the line buffers, then sprites.
     void renderTiledLine(int line, unsigned textMask, unsigned affineMask);
     void renderBackgroundLine(int bg, int line, int priority,
-                              uint32_t* colors, int* priorities);
+                              uint32_t* colors, int* priorities,
+                              const uint8_t* winMask);
     void renderAffineLine(int bg, int priority, uint32_t* colors,
-                          int* priorities);
+                          int* priorities, const uint8_t* winMask);
+
+    // Per-pixel layer-enable mask from the window registers: returns false
+    // when no window is enabled (every layer draws everywhere), otherwise
+    // fills mask[x] with BG0-3 in bits 0-3, OBJ in bit 4, and the colour-
+    // effects enable in bit 5. A layer draws only where its bit is set.
+    bool computeWindowMask(int line, uint8_t* mask) const;
 
     // Affine reference-point handling: the BG2X/Y (BG3X/Y) registers are
     // latched into internal accumulators when line 0 starts, then advanced
@@ -56,7 +63,7 @@ private:
     void latchAffineReferences();
     void advanceAffineReferences();
     void renderSpritesLine(int line, uint32_t* colors,
-                           const int* priorities);
+                           const int* priorities, const uint8_t* winMask);
 
     uint32_t paletteColor(uint32_t index) const;     // BG palette
     uint32_t objPaletteColor(uint32_t index) const;  // sprite palette

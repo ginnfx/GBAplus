@@ -523,6 +523,90 @@ void testAffineSprites(Bus& bus) {
           fb[240 + 1]);
 }
 
+// Windows: the WIN0/WIN1 rectangular bounds, inside-vs-outside layer masks
+// from WININ/WINOUT, WIN0's precedence over WIN1, and OBJ gating.
+void testWindows(Bus& bus) {
+    std::printf("Test: windows\n");
+    PPU ppu(bus);
+
+    bus.write16(0x04000008, 0x0800);  // BG0CNT: char base 0, screen base 8
+    bus.write16(0x05000000, 0x7C00);  // backdrop blue
+    bus.write16(0x05000002, 0x001F);  // BG palette 1: red
+    bus.write16(0x05000204, 0x03E0);  // OBJ palette 2: green
+
+    // BG0 tile 1 = color index 1 everywhere; map every entry to it so BG0
+    // would cover the whole screen red were it not for the window.
+    for (uint32_t i = 0; i < 32; ++i) {
+        bus.write8(0x06000000 + 32 + i, 0x11);
+    }
+    for (uint32_t i = 0; i < 1024; ++i) {
+        bus.write16(0x06004000 + i * 2, 0x0001);
+    }
+
+    auto frame = [&ppu] {
+        ppu.step(PPU::CYCLES_SCANLINE * PPU::LINES_TOTAL);
+        ppu.frameReady();
+    };
+    const auto& fb = ppu.framebuffer();
+    auto at = [&fb](int x, int y) { return fb[y * 240 + x]; };
+    const uint32_t RED = 0xFF0000FF, BLUE = 0x0000FFFF, GREEN = 0x00FF00FF;
+
+    // WIN0 = x[8,16) y[4,12). Inside enables BG0; outside enables nothing.
+    bus.write16(0x04000040, 0x0810);  // WIN0H: X1=8, X2=16
+    bus.write16(0x04000044, 0x040C);  // WIN0V: Y1=4, Y2=12
+    bus.write16(0x04000048, 0x0001);  // WININ: WIN0 -> BG0
+    bus.write16(0x0400004A, 0x0000);  // WINOUT: outside -> nothing
+    bus.write16(0x04000000, 0x2100);  // mode 0, BG0, WIN0
+    frame();
+    CHECK(at(10, 6) == RED, "WIN0 inside shows BG0 (got 0x%08X)", at(10, 6));
+    CHECK(at(15, 11) == RED, "WIN0 inclusive corner (got 0x%08X)", at(15, 11));
+    CHECK(at(16, 6) == BLUE, "WIN0 X2 exclusive (got 0x%08X)", at(16, 6));
+    CHECK(at(10, 12) == BLUE, "WIN0 Y2 exclusive (got 0x%08X)", at(10, 12));
+    CHECK(at(7, 6) == BLUE, "left of WIN0 -> backdrop (got 0x%08X)", at(7, 6));
+    CHECK(at(10, 0) == BLUE, "above WIN0 -> backdrop (got 0x%08X)", at(10, 0));
+
+    // Swap the masks: BG0 disabled inside, enabled outside -> inverted.
+    bus.write16(0x04000048, 0x0000);  // WININ: WIN0 -> nothing
+    bus.write16(0x0400004A, 0x0001);  // WINOUT: outside -> BG0
+    frame();
+    CHECK(at(10, 6) == BLUE, "inverted: inside now backdrop (got 0x%08X)",
+          at(10, 6));
+    CHECK(at(0, 0) == RED, "inverted: outside now BG0 (got 0x%08X)", at(0, 0));
+
+    // WIN0 (x[8,24) y[4,20), BG0 on) over WIN1 (x[0,16) y[0,12), BG0 off):
+    // the overlap must follow WIN0, not WIN1.
+    bus.write16(0x04000040, 0x0818);  // WIN0H: X1=8, X2=24
+    bus.write16(0x04000044, 0x0414);  // WIN0V: Y1=4, Y2=20
+    bus.write16(0x04000042, 0x0010);  // WIN1H: X1=0, X2=16
+    bus.write16(0x04000046, 0x000C);  // WIN1V: Y1=0, Y2=12
+    bus.write16(0x04000048, 0x0001);  // WININ: WIN0->BG0, WIN1->nothing
+    bus.write16(0x0400004A, 0x0000);  // WINOUT: outside -> nothing
+    bus.write16(0x04000000, 0x6100);  // mode 0, BG0, WIN0, WIN1
+    frame();
+    CHECK(at(10, 6) == RED, "overlap follows WIN0 (got 0x%08X)", at(10, 6));
+    CHECK(at(2, 2) == BLUE, "WIN1-only disables BG0 (got 0x%08X)", at(2, 2));
+    CHECK(at(20, 18) == RED, "WIN0-only enables BG0 (got 0x%08X)", at(20, 18));
+
+    // OBJ gating: an 8x8 sprite at x[4,12) straddles WIN0's left edge (X1=8).
+    // OBJ enabled inside WIN0 only, so the right half draws, the left hides.
+    for (uint32_t i = 0; i < 32; ++i) {
+        bus.write8(0x06010000 + 2 * 32 + i, 0x22);  // OBJ tile 2 -> color 2
+    }
+    bus.write16(0x07000000, 0x0004);  // attr0: y=4, 4bpp, square
+    bus.write16(0x07000002, 0x0004);  // attr1: x=4, 8x8
+    bus.write16(0x07000004, 0x0002);  // attr2: tile 2, priority 0
+    bus.write16(0x04000040, 0x08F0);  // WIN0H: X1=8, X2=240
+    bus.write16(0x04000044, 0x00A0);  // WIN0V: Y1=0, Y2=160
+    bus.write16(0x04000048, 0x0011);  // WININ: WIN0 -> BG0 + OBJ
+    bus.write16(0x0400004A, 0x0001);  // WINOUT: outside -> BG0 only
+    bus.write16(0x04000000, 0x3100);  // mode 0, BG0, OBJ, WIN0
+    frame();
+    CHECK(at(8, 5) == GREEN, "sprite visible inside WIN0 (got 0x%08X)",
+          at(8, 5));
+    CHECK(at(7, 5) == RED, "sprite hidden outside WIN0, BG0 shows (got "
+          "0x%08X)", at(7, 5));
+}
+
 // SRAM writes land in the save buffer and survive a save/load round trip.
 void testSRAMPersistence(Bus& bus) {
     std::printf("Test: SRAM persistence\n");
@@ -1313,6 +1397,10 @@ int main() {
     {
         Bus bus;
         testAffineSprites(bus);
+    }
+    {
+        Bus bus;
+        testWindows(bus);
     }
     {
         Bus bus;
