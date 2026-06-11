@@ -58,6 +58,8 @@ void ARM7TDMI::hleSWI(uint32_t number) {
         case 0x0B: swiCpuSet(); break;
         case 0x0C: swiCpuFastSet(); break;
         case 0x0D: regs[0] = 0xBAAE187F; break;
+        case 0x0E: swiBgAffineSet(); break;
+        case 0x0F: swiObjAffineSet(); break;
         case 0x10: swiBitUnPack(); break;
         case 0x11:
         case 0x12:
@@ -206,6 +208,70 @@ void ARM7TDMI::swiCpuFastSet() {
         bus.write32(dst, fill ? fillValue : bus.read32(src));
         src += 4;
         dst += 4;
+    }
+}
+
+void ARM7TDMI::swiBgAffineSet() {
+    uint32_t src = regs[0];
+    uint32_t dst = regs[1];
+    TRACE_LOG("BgAffineSet src=%08X dst=%08X n=%u", src, dst, regs[2]);
+    for (uint32_t n = regs[2]; n != 0; --n) {
+        const double ox = static_cast<int32_t>(bus.read32(src)) / 256.0;
+        const double oy = static_cast<int32_t>(bus.read32(src + 4)) / 256.0;
+        const double cx = static_cast<int16_t>(bus.read16(src + 8));
+        const double cy = static_cast<int16_t>(bus.read16(src + 10));
+        const double sx = static_cast<int16_t>(bus.read16(src + 12)) / 256.0;
+        const double sy = static_cast<int16_t>(bus.read16(src + 14)) / 256.0;
+        const double theta =
+            (bus.read16(src + 16) >> 8) / 128.0 * std::numbers::pi;
+        src += 20;
+
+        const double a = sx * std::cos(theta);
+        const double b = -sx * std::sin(theta);
+        const double c = sy * std::sin(theta);
+        const double d = sy * std::cos(theta);
+        const double rx = ox - (a * cx + b * cy);
+        const double ry = oy - (c * cx + d * cy);
+
+        bus.write16(dst, static_cast<uint16_t>(
+                             static_cast<int16_t>(a * 256)));
+        bus.write16(dst + 2, static_cast<uint16_t>(
+                                 static_cast<int16_t>(b * 256)));
+        bus.write16(dst + 4, static_cast<uint16_t>(
+                                 static_cast<int16_t>(c * 256)));
+        bus.write16(dst + 6, static_cast<uint16_t>(
+                                 static_cast<int16_t>(d * 256)));
+        bus.write32(dst + 8, static_cast<uint32_t>(
+                                 static_cast<int32_t>(rx * 256)));
+        bus.write32(dst + 12, static_cast<uint32_t>(
+                                  static_cast<int32_t>(ry * 256)));
+        dst += 16;
+    }
+}
+
+void ARM7TDMI::swiObjAffineSet() {
+    uint32_t src = regs[0];
+    uint32_t dst = regs[1];
+    const uint32_t offset = regs[3];
+    for (uint32_t n = regs[2]; n != 0; --n) {
+        const double sx = static_cast<int16_t>(bus.read16(src)) / 256.0;
+        const double sy = static_cast<int16_t>(bus.read16(src + 2)) / 256.0;
+        const double theta =
+            (bus.read16(src + 4) >> 8) / 128.0 * std::numbers::pi;
+        src += 6;
+
+        bus.write16(dst, static_cast<uint16_t>(static_cast<int16_t>(
+                             sx * std::cos(theta) * 256)));
+        bus.write16(dst + offset,
+                    static_cast<uint16_t>(static_cast<int16_t>(
+                        -sx * std::sin(theta) * 256)));
+        bus.write16(dst + offset * 2,
+                    static_cast<uint16_t>(static_cast<int16_t>(
+                        sy * std::sin(theta) * 256)));
+        bus.write16(dst + offset * 3,
+                    static_cast<uint16_t>(static_cast<int16_t>(
+                        sy * std::cos(theta) * 256)));
+        dst += offset * 4;
     }
 }
 

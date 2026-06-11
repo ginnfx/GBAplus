@@ -375,6 +375,99 @@ void testAffineBackground(Bus& bus) {
           fb[0]);
 }
 
+void testAffineSprites(Bus& bus) {
+    std::printf("Test: affine sprites\n");
+    PPU ppu(bus);
+
+    bus.write16(0x04000000, 0x1040);
+    bus.write16(0x05000000, 0x7C00);
+    bus.write16(0x05000202, 0x001F);
+    bus.write16(0x05000204, 0x03E0);
+
+    for (uint32_t r = 0; r < 8; ++r) {
+        bus.write8(0x06010000 + 2 * 32 + r * 4, 0x21);
+        bus.write8(0x06010000 + 2 * 32 + r * 4 + 1, 0x22);
+        bus.write8(0x06010000 + 2 * 32 + r * 4 + 2, 0x22);
+        bus.write8(0x06010000 + 2 * 32 + r * 4 + 3, 0x22);
+    }
+
+    bus.write16(0x07000000, 0x0000);
+    bus.write16(0x07000002, 0x0000);
+    bus.write16(0x07000004, 0x0002);
+
+    auto frame = [&ppu] {
+        ppu.step(PPU::CYCLES_SCANLINE * PPU::LINES_TOTAL);
+        ppu.frameReady();
+    };
+    const auto& fb = ppu.framebuffer();
+
+    frame();
+    uint32_t plain[8][10];
+    for (int r = 0; r < 8; ++r) {
+        for (int c = 0; c < 10; ++c) {
+            plain[r][c] = fb[r * 240 + c];
+        }
+    }
+    CHECK(plain[0][0] == 0xFF0000FF && plain[0][1] == 0x00FF00FF,
+          "regular sprite drawn (got 0x%08X, 0x%08X)", plain[0][0],
+          plain[0][1]);
+
+    bus.write16(0x07000000, 0x0100);
+    bus.write16(0x07000006, 0x0100);
+    bus.write16(0x0700000E, 0x0000);
+    bus.write16(0x07000016, 0x0000);
+    bus.write16(0x0700001E, 0x0100);
+    frame();
+    int mismatches = 0;
+    for (int r = 0; r < 8; ++r) {
+        for (int c = 0; c < 10; ++c) {
+            if (fb[r * 240 + c] != plain[r][c]) {
+                ++mismatches;
+            }
+        }
+    }
+    CHECK(mismatches == 0,
+          "identity affine matches regular twin (%d mismatches)",
+          mismatches);
+
+    bus.write16(0x07000006, 0x0000);
+    bus.write16(0x0700000E, 0x0100);
+    bus.write16(0x07000016, 0xFF00);
+    bus.write16(0x0700001E, 0x0000);
+    frame();
+    CHECK(fb[1] == 0xFF0000FF, "rotate: (1,0) red (got 0x%08X)", fb[1]);
+    CHECK(fb[7] == 0xFF0000FF, "rotate: (7,0) red (got 0x%08X)", fb[7]);
+    CHECK(fb[240 + 1] == 0x00FF00FF, "rotate: (1,1) green (got 0x%08X)",
+          fb[240 + 1]);
+    CHECK(fb[0] == 0x0000FFFF,
+          "rotate: (0,0) off the texture edge (got 0x%08X)", fb[0]);
+
+    bus.write16(0x07000000, 0x0300);
+    bus.write16(0x07000006, 0x0080);
+    bus.write16(0x0700000E, 0x0000);
+    bus.write16(0x07000016, 0x0000);
+    bus.write16(0x0700001E, 0x0080);
+    frame();
+    CHECK(fb[0] == 0xFF0000FF && fb[1] == 0xFF0000FF,
+          "double-size 2x: red column doubled at x 0-1 (got 0x%08X, 0x%08X)",
+          fb[0], fb[1]);
+    CHECK(fb[15] == 0x00FF00FF, "double-size 2x: (15,0) green (got 0x%08X)",
+          fb[15]);
+    CHECK(fb[16] == 0x0000FFFF, "double-size 2x: (16,0) backdrop (got "
+          "0x%08X)", fb[16]);
+
+    bus.write16(0x07000000, 0x0100);
+    frame();
+    CHECK(fb[0] == 0x00FF00FF,
+          "no double-size: edge clipped, (0,0) green (got 0x%08X)", fb[0]);
+
+    bus.write16(0x07000000, 0x0200);
+    frame();
+    CHECK(fb[0] == 0x0000FFFF && fb[240 + 1] == 0x0000FFFF,
+          "bit 9 alone disables the sprite (got 0x%08X, 0x%08X)", fb[0],
+          fb[240 + 1]);
+}
+
 void testSRAMPersistence(Bus& bus) {
     std::printf("Test: SRAM persistence\n");
 
@@ -1106,6 +1199,10 @@ int main() {
     {
         Bus bus;
         testAffineBackground(bus);
+    }
+    {
+        Bus bus;
+        testAffineSprites(bus);
     }
     {
         Bus bus;
