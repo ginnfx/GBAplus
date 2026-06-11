@@ -420,6 +420,9 @@ void Bus::detectBackupType() {
     } else {
         backup = BackupType::SRAM;
         backupMem.assign(SRAM_SIZE, 0);
+        if (!contains("SRAM_V") && !contains("SRAM_F_V")) {
+            TRACE_LOG("no backup ID string; defaulting to SRAM");
+        }
     }
     flashState = FlashState::Ready;
     flashIdMode = false;
