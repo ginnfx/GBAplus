@@ -607,6 +607,62 @@ void testWindows(Bus& bus) {
           "0x%08X)", at(7, 5));
 }
 
+// OBJ window: an OBJ-window-mode sprite (attr0 mode 2) marks a region
+// rather than drawing; WINOUT's high byte selects which layers draw inside
+// that region, its low byte what draws outside.
+void testObjWindow(Bus& bus) {
+    std::printf("Test: OBJ window\n");
+    PPU ppu(bus);
+
+    bus.write16(0x04000008, 0x0800);  // BG0CNT: char base 0, screen base 8
+    bus.write16(0x05000000, 0x7C00);  // backdrop blue
+    bus.write16(0x05000002, 0x001F);  // BG palette 1: red
+    bus.write16(0x05000204, 0x03E0);  // OBJ palette 2: green
+
+    for (uint32_t i = 0; i < 32; ++i) {
+        bus.write8(0x06000000 + 32 + i, 0x11);       // BG0 tile 1 -> red
+        bus.write8(0x06010000 + 2 * 32 + i, 0x22);   // OBJ tile 2 -> color 2
+    }
+    for (uint32_t i = 0; i < 1024; ++i) {
+        bus.write16(0x06004000 + i * 2, 0x0001);     // BG0 maps to tile 1
+    }
+
+    // An 8x8 OBJ-window sprite at (8,8): attr0 mode bits 10-11 = 2.
+    bus.write16(0x07000000, 0x0808);  // attr0: y=8, OBJ mode 2 (window)
+    bus.write16(0x07000002, 0x0008);  // attr1: x=8, 8x8
+    bus.write16(0x07000004, 0x0002);  // attr2: tile 2, priority 0
+
+    // Inside the OBJ window region BG0 draws; outside nothing draws.
+    bus.write16(0x04000048, 0x0000);  // WININ unused
+    bus.write16(0x0400004A, 0x0100);  // WINOUT: objwin -> BG0, outside none
+    bus.write16(0x04000000, 0x9140);  // mode 0, BG0, OBJ, OBJ window, 1D
+
+    ppu.step(PPU::CYCLES_SCANLINE * PPU::LINES_TOTAL);
+    ppu.frameReady();
+    const auto& fb = ppu.framebuffer();
+    auto at = [&fb](int x, int y) { return fb[y * 240 + x]; };
+    const uint32_t RED = 0xFF0000FF, BLUE = 0x0000FFFF;
+
+    CHECK(at(10, 10) == RED,
+          "inside OBJ window: BG0 draws, sprite invisible (got 0x%08X)",
+          at(10, 10));
+    CHECK(at(16, 10) == BLUE,
+          "just outside the sprite box -> backdrop (got 0x%08X)", at(16, 10));
+    CHECK(at(50, 50) == BLUE,
+          "outside OBJ window -> backdrop (got 0x%08X)", at(50, 50));
+
+    // With the OBJ window disabled, the mode-2 sprite still never draws and
+    // BG0 (no active window) covers the screen.
+    bus.write16(0x04000000, 0x1140);  // mode 0, BG0, OBJ, no OBJ window
+    ppu.step(PPU::CYCLES_SCANLINE * PPU::LINES_TOTAL);
+    ppu.frameReady();
+    CHECK(at(10, 10) == RED,
+          "OBJ-window sprite never draws as a visible sprite (got 0x%08X)",
+          at(10, 10));
+    CHECK(at(50, 50) == RED, "no window: BG0 everywhere (got 0x%08X)",
+          at(50, 50));
+}
+
 // SRAM writes land in the save buffer and survive a save/load round trip.
 void testSRAMPersistence(Bus& bus) {
     std::printf("Test: SRAM persistence\n");
@@ -1401,6 +1457,10 @@ int main() {
     {
         Bus bus;
         testWindows(bus);
+    }
+    {
+        Bus bus;
+        testObjWindow(bus);
     }
     {
         Bus bus;

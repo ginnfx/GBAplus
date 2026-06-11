@@ -137,7 +137,7 @@ void PPU::renderMode4(int line) {
     if (dispcnt & DISPCNT_OBJ_ON) {
         // Windowing in the bitmap modes is not modelled yet; sprites here
         // draw unconditionally.
-        renderSpritesLine(line, colors, priorities, nullptr);
+        renderSpritesLine(line, colors, priorities, nullptr, nullptr);
     }
 
     for (int x = 0; x < SCREEN_WIDTH; ++x) {
@@ -159,11 +159,20 @@ void PPU::renderTiledLine(int line, unsigned textMask, unsigned affineMask) {
         priorities[x] = PRIORITY_BACKDROP;
     }
 
+    // OBJ-window coverage for this line: a pre-pass over the OBJ-window-mode
+    // sprites, run before the mask is built since the mask's OBJ-window tier
+    // depends on it. Zero-initialised so a disabled OBJ window contributes
+    // nothing.
+    uint8_t objWinBuf[SCREEN_WIDTH] = {0};
+    if ((dispcnt & DISPCNT_OBJWIN) && (dispcnt & DISPCNT_OBJ_ON)) {
+        renderSpritesLine(line, nullptr, nullptr, nullptr, objWinBuf);
+    }
+
     // Per-pixel layer-enable mask; nullptr when no window is active, which
     // lets every layer draw everywhere with no per-pixel test.
     uint8_t winMaskBuf[SCREEN_WIDTH];
     const uint8_t* winMask =
-        computeWindowMask(line, winMaskBuf) ? winMaskBuf : nullptr;
+        computeWindowMask(line, winMaskBuf, objWinBuf) ? winMaskBuf : nullptr;
 
     // Draw lowest priority first so higher priorities overwrite. Within a
     // priority level, higher BG numbers sit below lower ones.
@@ -187,7 +196,7 @@ void PPU::renderTiledLine(int line, unsigned textMask, unsigned affineMask) {
     }
 
     if (dispcnt & DISPCNT_OBJ_ON) {
-        renderSpritesLine(line, colors, priorities, winMask);
+        renderSpritesLine(line, colors, priorities, winMask, nullptr);
     }
 
     for (int x = 0; x < SCREEN_WIDTH; ++x) {
@@ -334,8 +343,9 @@ void PPU::advanceAffineReferences() {
 // coordinate is inside when X1 <= p < X2; if the edges are reversed (X1 >
 // X2) the region wraps around the screen edge, which also makes a right edge
 // past 240 (or bottom past 160) span the whole axis. WIN0 outranks WIN1,
-// then the outside region. The OBJ window tier is added with that feature.
-bool PPU::computeWindowMask(int line, uint8_t* mask) const {
+// then the OBJ window, then the outside region.
+bool PPU::computeWindowMask(int line, uint8_t* mask,
+                            const uint8_t* objWin) const {
     const uint16_t dispcnt = bus.read16(REG_DISPCNT);
     const bool win0 = dispcnt & DISPCNT_WIN0;
     const bool win1 = dispcnt & DISPCNT_WIN1;
@@ -349,6 +359,7 @@ bool PPU::computeWindowMask(int line, uint8_t* mask) const {
     const uint8_t in0 = winin & 0x3F;
     const uint8_t in1 = (winin >> 8) & 0x3F;
     const uint8_t out = winout & 0x3F;
+    const uint8_t obj = (winout >> 8) & 0x3F;  // OBJ-window region mask
 
     auto edges = [](uint16_t v, int& lo, int& hi) {
         lo = (v >> 8) & 0xFF;  // X1/Y1 inclusive
@@ -371,6 +382,8 @@ bool PPU::computeWindowMask(int line, uint8_t* mask) const {
             mask[x] = in0;
         } else if (on1 && inside(x, x1lo, x1hi)) {
             mask[x] = in1;
+        } else if (objwin && objWin[x]) {
+            mask[x] = obj;
         } else {
             mask[x] = out;
         }
@@ -379,8 +392,10 @@ bool PPU::computeWindowMask(int line, uint8_t* mask) const {
 }
 
 void PPU::renderSpritesLine(int line, uint32_t* colors,
-                            const int* priorities, const uint8_t* winMask) {
+                            const int* priorities, const uint8_t* winMask,
+                            uint8_t* objWin) {
     const bool map1D = bus.read16(REG_DISPCNT) & DISPCNT_OBJ_1D;
+    const bool objWinPass = objWin != nullptr;
 
     // Iterate high to low so the lower OAM index (higher priority on
     // hardware) is drawn last and wins overlaps.
@@ -399,6 +414,12 @@ void PPU::renderSpritesLine(int line, uint32_t* colors,
         const uint32_t shape = attr0 >> 14;
         if (shape == 3) {
             continue;  // prohibited shape
+        }
+        // OBJ mode: 2 = OBJ window (marks the window region, never drawn).
+        // The pre-pass handles only those; the visible pass skips them.
+        const uint32_t objMode = (attr0 >> 10) & 3;
+        if (objWinPass ? (objMode != 2) : (objMode == 2)) {
+            continue;
         }
         const uint32_t sizeIdx = attr1 >> 14;
         const int width = OBJ_WIDTH[shape][sizeIdx];
@@ -452,11 +473,13 @@ void PPU::renderSpritesLine(int line, uint32_t* colors,
             if (sx < 0 || sx >= SCREEN_WIDTH) {
                 continue;
             }
-            if (winMask && !(winMask[sx] & (1u << 4))) {
-                continue;  // OBJ disabled inside the active window region
-            }
-            if (priority > priorities[sx]) {
-                continue;  // behind the background at this pixel
+            if (!objWinPass) {
+                if (winMask && !(winMask[sx] & (1u << 4))) {
+                    continue;  // OBJ disabled in the active window region
+                }
+                if (priority > priorities[sx]) {
+                    continue;  // behind the background at this pixel
+                }
             }
             int col;
             int texRow;
@@ -500,6 +523,10 @@ void PPU::renderSpritesLine(int line, uint32_t* colors,
             }
             if (colorIndex == 0) {
                 continue;  // transparent
+            }
+            if (objWinPass) {
+                objWin[sx] = 1;  // opaque OBJ-window texel marks the region
+                continue;
             }
             colors[sx] = objPaletteColor(colorIndex);
         }

@@ -54,7 +54,9 @@ private:
     // when no window is enabled (every layer draws everywhere), otherwise
     // fills mask[x] with BG0-3 in bits 0-3, OBJ in bit 4, and the colour-
     // effects enable in bit 5. A layer draws only where its bit is set.
-    bool computeWindowMask(int line, uint8_t* mask) const;
+    // objWin marks pixels covered by OBJ-window sprites for that tier.
+    bool computeWindowMask(int line, uint8_t* mask,
+                           const uint8_t* objWin) const;
 
     // Affine reference-point handling: the BG2X/Y (BG3X/Y) registers are
     // latched into internal accumulators when line 0 starts, then advanced
@@ -62,8 +64,13 @@ private:
     // do not take effect until the next frame.
     void latchAffineReferences();
     void advanceAffineReferences();
+    // When objWin is non-null this runs as the OBJ-window pre-pass: only
+    // OBJ-window-mode sprites are scanned and their opaque pixels set
+    // objWin[x] instead of drawing. Otherwise it is the normal visible
+    // pass, which skips OBJ-window-mode sprites.
     void renderSpritesLine(int line, uint32_t* colors,
-                           const int* priorities, const uint8_t* winMask);
+                           const int* priorities, const uint8_t* winMask,
+                           uint8_t* objWin);
 
     uint32_t paletteColor(uint32_t index) const;     // BG palette
     uint32_t objPaletteColor(uint32_t index) const;  // sprite palette
