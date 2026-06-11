@@ -1,13 +1,10 @@
 # GBAplus
 
-A Game Boy Advance emulator written in modern C++20 with SDL2.
+A WIP Game Boy Advance emulator written in C++ with SDL2.
 
 GBAplus emulates the ARM7TDMI CPU (both ARM and Thumb instruction sets), the
 tiled and bitmap PPU video modes, 4-channel DMA, hardware timers, and the
-full audio unit — the four GB-style PSG channels plus the GBA's two Direct
-Sound FIFO channels. Components are strictly decoupled: the CPU, PPU, DMA,
-timers, and APU communicate exclusively through a central memory bus,
-mirroring how the real hardware hangs off its bus.
+full audio unit. a LOT of ts was done using documentation from GBATEK, ARM7TDMI Technical Reference Manual and mGBA. 
 
 ## Features
 
@@ -109,6 +106,8 @@ as mGBA.
 
 ## Current state
 Most games unlikely to boot. However some appear to work if given time/skipping logos (AOS)
+Visual artifacts also are VERY common. Stuff like green flashes or weird artifacting for example. In
+games that boot, like Aria of Sorrow, most dialogue boxes or enviroment textures won't render ;-; 
 
 ## Accuracy notes
  Instruction timing is currently approximated (a flat cost per instruction rather than true
