@@ -108,9 +108,7 @@ For accuracy work, `--trace` writes `emu_trace.log` and
 as mGBA.
 
 ## Accuracy notes
-
-GBAplus favors clean architecture over cycle accuracy. Instruction timing
-is currently approximated (a flat cost per instruction rather than true
+ Instruction timing is currently approximated (a flat cost per instruction rather than true
 S/N/I cycle counting), affine backgrounds/sprites and PPU modes 1/2/4/5 are
 not yet implemented, and backup media beyond SRAM (Flash, EEPROM) is still
 to come. Hardware behavior follows the GBATEK documentation.
