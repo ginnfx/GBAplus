@@ -51,6 +51,10 @@ public:
     Mode currentMode() const { return static_cast<Mode>(cpsr & MODE_MASK); }
     bool inThumbState() const { return cpsr & BIT_T; }
 
+    // True while the CPU sleeps after Halt/IntrWait. step() still consumes
+    // time but executes nothing until an enabled interrupt arrives.
+    bool isHalted() const { return halted; }
+
     // Switches the CPSR mode bits and swaps the banked registers in/out.
     void switchMode(Mode newMode);
 
@@ -111,6 +115,8 @@ private:
     void armMultiply(uint32_t opcode);            // MUL/MLA
     void armMultiplyLong(uint32_t opcode);        // UMULL/UMLAL/SMULL/SMLAL
     void armPSRTransfer(uint32_t opcode);         // MRS/MSR
+    void armSwap(uint32_t opcode);                // SWP/SWPB
+    void armSoftwareInterrupt(uint32_t opcode);
     void armUnimplemented(uint32_t opcode);
 
     void thumbShifted(uint16_t opcode);        // F1:  LSL/LSR/ASR imm
@@ -130,7 +136,25 @@ private:
     void thumbCondBranch(uint16_t opcode);     // F16: Bcc
     void thumbBranch(uint16_t opcode);         // F18: B
     void thumbLongBranch(uint16_t opcode);     // F19: BL (two halves)
+    void thumbSoftwareInterrupt(uint16_t opcode);  // F17
     void thumbUnimplemented(uint16_t opcode);
+
+    // SWI entry: takes the SVC exception when a real BIOS is loaded,
+    // otherwise high-level-emulates the call (ARM7TDMI_swi.cpp).
+    void softwareInterrupt(uint32_t number);
+    void hleSWI(uint32_t number);
+    void swiSoftReset();
+    void swiRegisterRamReset(uint32_t flags);
+    void swiIntrWait(uint32_t discardOld, uint32_t mask);
+    void swiDiv(int32_t numerator, int32_t denominator);
+    void swiArcTan();
+    void swiArcTan2();
+    void swiCpuSet();
+    void swiCpuFastSet();
+    void swiBitUnPack();
+    void swiLZ77UnComp();
+    void swiHuffUnComp();
+    void swiRLUnComp();
 
     // ALU helpers shared by ARM and Thumb paths. Subtraction is expressed
     // as a + ~b + carryIn, which yields ARM-convention C and V for free.
@@ -162,6 +186,13 @@ private:
     // of the instruction at A it reads A+8 (ARM) / A+4 (Thumb).
     std::array<uint32_t, 2> pipeline{};
     bool pipelineFlushed = false;
+
+    // Halt/IntrWait state. intrWaiting models the BIOS IntrWait loop: the
+    // CPU re-halts after each IRQ until the user handler has set one of the
+    // requested bits in the IF-shadow halfword at 0x03007FF8.
+    bool halted = false;
+    bool intrWaiting = false;
+    uint32_t intrWaitMask = 0;
 
     std::FILE* traceFile = nullptr;
 };

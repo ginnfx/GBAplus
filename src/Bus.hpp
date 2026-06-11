@@ -27,6 +27,14 @@ class Timers;
 //   0x0E000000 - 0x0E007FFF  Cartridge SRAM (32 KiB, 8-bit interface)
 class Bus {
 public:
+    // Cartridge backup media, detected from ID strings in the ROM.
+    enum class BackupType {
+        SRAM,      // 32 KiB battery SRAM (also the default when undetected)
+        Flash64,   // 64 KiB flash (SST ID 0xBF 0xD4)
+        Flash128,  // 128 KiB flash, banked (Macronix ID 0xC2 0x09)
+        EEPROM,    // detected but not yet emulated
+    };
+
     // Interrupt request bits (REG_IE / REG_IF).
     static constexpr uint16_t IRQ_VBLANK = 1u << 0;
     static constexpr uint16_t IRQ_HBLANK = 1u << 1;
@@ -59,10 +67,11 @@ public:
     // Bypasses the game-facing write masks and the IF acknowledge logic.
     void writeIODirect16(uint32_t addr, uint16_t value);
 
-    // Cartridge backup media (.sav files mirroring the SRAM buffer).
+    // Cartridge backup media (.sav files mirroring the backup buffer).
     bool loadCartridgeData(const std::string& filepath);
     bool saveCartridgeData(const std::string& filepath) const;
     bool sramDirty() const { return sramWritten; }
+    BackupType backupType() const { return backup; }
 
     // The DMA controller is notified through the Bus when games touch its
     // control registers or when the PPU reaches HBlank/VBlank.
@@ -101,7 +110,7 @@ private:
     std::array<uint8_t, PALETTE_SIZE> palette{};
     std::array<uint8_t, VRAM_SIZE>    vram{};
     std::array<uint8_t, OAM_SIZE>     oam{};
-    std::array<uint8_t, SRAM_SIZE>    sram{};
+    std::vector<uint8_t>              backupMem;  // sized by backup type
     std::vector<uint8_t>              rom;
 
     DMA* dma = nullptr;
@@ -109,6 +118,19 @@ private:
     APU* apu = nullptr;
     bool sramWritten = false;
     bool biosLoaded = false;
+
+    // Flash command state machine (0x0E region when backup is Flash).
+    enum class FlashState { Ready, Cmd1, Cmd2, Program, Bank };
+    BackupType backup = BackupType::SRAM;
+    FlashState flashState = FlashState::Ready;
+    bool flashIdMode = false;
+    bool flashErasePending = false;
+    uint32_t flashBank = 0;
+
+    void detectBackupType();
+    uint8_t backupRead(uint32_t addr) const;
+    void backupWrite(uint32_t addr, uint8_t value);
+    void flashWrite(uint32_t offset, uint8_t value);
 
     static uint32_t mirrorVRAM(uint32_t addr);
     static uint8_t ioWriteMask(uint32_t offset);

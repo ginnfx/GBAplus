@@ -1,5 +1,7 @@
 #include "Bus.hpp"
 
+#include <algorithm>
+#include <cstring>
 #include <fstream>
 
 #include "APU.hpp"
@@ -19,6 +21,7 @@ Bus::Bus() {
     // KEYINPUT is active low: all buttons released at power-on.
     io[IO_KEYINPUT] = 0xFF;
     io[IO_KEYINPUT + 1] = 0x03;
+    backupMem.assign(SRAM_SIZE, 0);
 }
 
 // Game-facing IO write masks: a 0 bit is read-only and survives any game
@@ -96,7 +99,7 @@ uint8_t Bus::read8(uint32_t addr) const {
         }
         case 0x0E:
         case 0x0F:
-            return sram[addr & (SRAM_SIZE - 1)];
+            return backupRead(addr);
         default:
             TRACE_LOG("read8 from unmapped address 0x%08X", addr);
             return 0;
@@ -170,8 +173,7 @@ void Bus::write8(uint32_t addr, uint8_t value) {
             return;
         case 0x0E:
         case 0x0F:
-            sram[addr & (SRAM_SIZE - 1)] = value;
-            sramWritten = true;
+            backupWrite(addr, value);
             return;
         case 0x00:
         case 0x08:
@@ -229,6 +231,132 @@ void Bus::requestInterrupt(uint16_t mask) {
     io[IO_IF + 1] |= static_cast<uint8_t>(mask >> 8);
 }
 
+// Backup media routing for the 0x0E region. SRAM (and unemulated EEPROM)
+// reads/writes go straight to the buffer; Flash goes through the command
+// state machine.
+uint8_t Bus::backupRead(uint32_t addr) const {
+    if (backup == BackupType::Flash64 || backup == BackupType::Flash128) {
+        const uint32_t offset = addr & 0xFFFF;
+        if (flashIdMode) {
+            // Flash64 reports SST (0xBF 0xD4), Flash128 Macronix (0xC2 09).
+            if (offset == 0) {
+                return backup == BackupType::Flash64 ? 0xBF : 0xC2;
+            }
+            if (offset == 1) {
+                return backup == BackupType::Flash64 ? 0xD4 : 0x09;
+            }
+        }
+        return backupMem[flashBank * 0x10000 + offset];
+    }
+    return backupMem[addr & (SRAM_SIZE - 1)];
+}
+
+void Bus::backupWrite(uint32_t addr, uint8_t value) {
+    if (backup == BackupType::Flash64 || backup == BackupType::Flash128) {
+        flashWrite(addr & 0xFFFF, value);
+        return;
+    }
+    backupMem[addr & (SRAM_SIZE - 1)] = value;
+    sramWritten = true;
+}
+
+// Flash command sequences: 0xAA @ 0x5555, 0x55 @ 0x2AAA, then the command
+// byte. 0x80 arms erase for the following sequence (0x10 = chip erase,
+// 0x30 @ sector = 4 KiB sector erase). 0xA0 programs one byte, 0xB0 selects
+// the 64 KiB bank on 128 KiB chips, 0x90/0xF0 enter/leave chip-ID mode.
+void Bus::flashWrite(uint32_t offset, uint8_t value) {
+    switch (flashState) {
+        case FlashState::Program:
+            backupMem[flashBank * 0x10000 + offset] = value;
+            sramWritten = true;
+            flashState = FlashState::Ready;
+            return;
+        case FlashState::Bank:
+            if (offset == 0) {
+                flashBank = value & 1;
+            }
+            flashState = FlashState::Ready;
+            return;
+        default:
+            break;
+    }
+
+    if (offset == 0x5555 && value == 0xAA) {
+        flashState = FlashState::Cmd1;
+        return;
+    }
+    if (flashState == FlashState::Cmd1 && offset == 0x2AAA &&
+        value == 0x55) {
+        flashState = FlashState::Cmd2;
+        return;
+    }
+    if (flashState == FlashState::Cmd2) {
+        if (offset == 0x5555) {
+            switch (value) {
+                case 0x90: flashIdMode = true; break;
+                case 0xF0: flashIdMode = false; break;
+                case 0x80: flashErasePending = true; break;
+                case 0x10:
+                    if (flashErasePending) {
+                        std::fill(backupMem.begin(), backupMem.end(), 0xFF);
+                        sramWritten = true;
+                        flashErasePending = false;
+                    }
+                    break;
+                case 0xA0: flashState = FlashState::Program; return;
+                case 0xB0:
+                    if (backup == BackupType::Flash128) {
+                        flashState = FlashState::Bank;
+                        return;
+                    }
+                    break;
+                default:
+                    TRACE_LOG("flash: unknown command 0x%02X", value);
+                    break;
+            }
+        } else if (value == 0x30 && flashErasePending) {
+            const uint32_t sector =
+                flashBank * 0x10000 + (offset & 0xF000);
+            std::fill(backupMem.begin() + sector,
+                      backupMem.begin() + sector + 0x1000, 0xFF);
+            sramWritten = true;
+            flashErasePending = false;
+        }
+    }
+    flashState = FlashState::Ready;
+}
+
+// Scans the ROM for the backup ID strings the official SDK embeds.
+void Bus::detectBackupType() {
+    auto contains = [this](const char* id) {
+        const size_t len = std::strlen(id);
+        if (rom.size() < len) {
+            return false;
+        }
+        return std::search(rom.begin(), rom.end(), id, id + len) !=
+               rom.end();
+    };
+
+    if (contains("FLASH1M_V")) {
+        backup = BackupType::Flash128;
+        backupMem.assign(0x20000, 0xFF);
+    } else if (contains("FLASH512_V") || contains("FLASH_V")) {
+        backup = BackupType::Flash64;
+        backupMem.assign(0x10000, 0xFF);
+    } else if (contains("EEPROM_V")) {
+        backup = BackupType::EEPROM;
+        backupMem.assign(SRAM_SIZE, 0);
+        TRACE_LOG("EEPROM cartridge detected; not yet emulated");
+    } else {
+        backup = BackupType::SRAM;  // explicit SRAM_V or no ID at all
+        backupMem.assign(SRAM_SIZE, 0);
+    }
+    flashState = FlashState::Ready;
+    flashIdMode = false;
+    flashErasePending = false;
+    flashBank = 0;
+}
+
 bool Bus::loadROM(const std::string& filepath) {
     std::ifstream file(filepath, std::ios::binary | std::ios::ate);
     if (!file) {
@@ -247,7 +375,11 @@ bool Bus::loadROM(const std::string& filepath) {
     file.seekg(0);
     file.read(reinterpret_cast<char*>(rom.data()),
               static_cast<std::streamsize>(size));
-    return file.good();
+    if (file.good()) {
+        detectBackupType();
+        return true;
+    }
+    return false;
 }
 
 bool Bus::loadBIOS(const std::string& filepath) {
@@ -267,8 +399,8 @@ bool Bus::loadCartridgeData(const std::string& filepath) {
     if (!file) {
         return false;  // no save yet; not an error
     }
-    file.read(reinterpret_cast<char*>(sram.data()),
-              static_cast<std::streamsize>(SRAM_SIZE));
+    file.read(reinterpret_cast<char*>(backupMem.data()),
+              static_cast<std::streamsize>(backupMem.size()));
     return file.gcount() > 0;
 }
 
@@ -278,7 +410,7 @@ bool Bus::saveCartridgeData(const std::string& filepath) const {
         TRACE_LOG("saveCartridgeData: cannot write '%s'", filepath.c_str());
         return false;
     }
-    file.write(reinterpret_cast<const char*>(sram.data()),
-               static_cast<std::streamsize>(SRAM_SIZE));
+    file.write(reinterpret_cast<const char*>(backupMem.data()),
+               static_cast<std::streamsize>(backupMem.size()));
     return file.good();
 }

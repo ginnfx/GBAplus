@@ -101,9 +101,31 @@ void ARM7TDMI::hleIrqReturn() {
     setCPSR(getSPSR());  // leave IRQ mode, restore T and I
     regs[15] = resumeAddr;
     flushPipeline();
+
+    // The BIOS IntrWait loop: stay asleep until the user handler has set
+    // one of the requested bits in the IF-shadow at 0x03007FF8.
+    if (intrWaiting) {
+        const uint16_t shadow = bus.read16(0x03007FF8);
+        if (shadow & intrWaitMask) {
+            bus.write16(0x03007FF8,
+                        shadow & static_cast<uint16_t>(~intrWaitMask));
+            intrWaiting = false;
+        } else {
+            halted = true;
+        }
+    }
 }
 
 void ARM7TDMI::step() {
+    if (halted) {
+        // Asleep after Halt/IntrWait: wake when any enabled interrupt is
+        // requested (IE & IF), independent of IME. The system clock keeps
+        // advancing around the sleeping core.
+        if ((bus.read16(0x04000200) & bus.read16(0x04000202)) == 0) {
+            return;
+        }
+        halted = false;
+    }
     if (irqPending()) {
         enterIRQ();
     }
@@ -244,7 +266,9 @@ const std::array<ARM7TDMI::ArmHandler, 4096>& ARM7TDMI::armTable() {
             const uint32_t low4 = idx & 0xF;  // instruction bits 7-4
             ArmHandler handler = &ARM7TDMI::armUnimplemented;
 
-            if ((top8 & 0xE0) == 0xA0) {
+            if ((top8 & 0xF0) == 0xF0) {
+                handler = &ARM7TDMI::armSoftwareInterrupt;  // bits 27-24
+            } else if ((top8 & 0xE0) == 0xA0) {
                 handler = &ARM7TDMI::armBranch;  // bits 27-25 == 101
             } else if (top8 == 0x12 && (low4 == 0x1 || low4 == 0x3)) {
                 handler = &ARM7TDMI::armBranchExchange;  // BX / BLX-reg
@@ -260,8 +284,9 @@ const std::array<ARM7TDMI::ArmHandler, 4096>& ARM7TDMI::armTable() {
                         handler = &ARM7TDMI::armMultiply;
                     } else if ((top8 & 0xF8) == 0x08) {
                         handler = &ARM7TDMI::armMultiplyLong;
+                    } else if ((top8 & 0xFB) == 0x10) {
+                        handler = &ARM7TDMI::armSwap;  // SWP/SWPB
                     }
-                    // else SWP/SWPB: not implemented yet
                 } else if (!(top8 & 0x20) && (low4 & 0x9) == 0x9) {
                     // bits 7,4 set with bits 6-5 != 00: halfword/signed
                     handler = &ARM7TDMI::armHalfwordTransfer;
@@ -735,6 +760,52 @@ void ARM7TDMI::armPSRTransfer(uint32_t opcode) {
     setCPSR((cpsr & ~mask) | (value & mask));
 }
 
+// SWP/SWPB: atomic swap between a register and memory. A word SWP from a
+// misaligned address rotates the loaded value like LDR does.
+void ARM7TDMI::armSwap(uint32_t opcode) {
+    const bool byte = opcode & (1u << 22);
+    const uint32_t addr = regs[(opcode >> 16) & 0xF];
+    const uint32_t rd = (opcode >> 12) & 0xF;
+    const uint32_t rm = opcode & 0xF;
+
+    if (byte) {
+        const uint8_t old = bus.read8(addr);
+        bus.write8(addr, static_cast<uint8_t>(regs[rm]));
+        regs[rd] = old;
+    } else {
+        uint32_t old = bus.read32(addr);
+        const uint32_t rot = (addr & 3) * 8;
+        old = std::rotr(old, static_cast<int>(rot));
+        bus.write32(addr, regs[rm]);
+        regs[rd] = old;
+    }
+}
+
+void ARM7TDMI::armSoftwareInterrupt(uint32_t opcode) {
+    // The BIOS dispatches on bits 23-16 of the comment field.
+    softwareInterrupt((opcode >> 16) & 0xFF);
+}
+
+void ARM7TDMI::thumbSoftwareInterrupt(uint16_t opcode) {
+    softwareInterrupt(opcode & 0xFF);
+}
+
+void ARM7TDMI::softwareInterrupt(uint32_t number) {
+    if (bus.hasBIOS()) {
+        // Take the real SVC exception and let the loaded BIOS handle it.
+        const uint32_t oldCpsr = cpsr;
+        const uint32_t returnAddr = regs[15] - (inThumbState() ? 2 : 4);
+        switchMode(Mode::Supervisor);
+        spsrBank[BANK_SVC] = oldCpsr;
+        regs[14] = returnAddr;
+        cpsr = (cpsr & ~BIT_T) | BIT_I;
+        regs[15] = 0x00000008;  // SWI exception vector
+        flushPipeline();
+        return;
+    }
+    hleSWI(number);
+}
+
 void ARM7TDMI::armUnimplemented(uint32_t opcode) {
     TRACE_LOG("unimplemented ARM opcode 0x%08X @ 0x%08X", opcode,
               regs[15] - 8);
@@ -808,7 +879,7 @@ const std::array<ARM7TDMI::ThumbHandler, 256>& ARM7TDMI::thumbTable() {
             } else if ((i & 0xF0) == 0xC0) {
                 h = &ARM7TDMI::thumbMultiple;       // 1100
             } else if (i == 0xDF) {
-                h = &ARM7TDMI::thumbUnimplemented;  // SWI
+                h = &ARM7TDMI::thumbSoftwareInterrupt;  // F17
             } else if ((i & 0xF0) == 0xD0) {
                 h = &ARM7TDMI::thumbCondBranch;     // 1101
             } else if ((i & 0xF8) == 0xE0) {

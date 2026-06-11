@@ -122,6 +122,16 @@ int runEmulator(const Options& opts) {
         }
         std::printf("Loaded %s (%zu bytes)\n", opts.romPath.c_str(),
                     bus.romSize());
+        const char* backupName = "SRAM";
+        switch (bus.backupType()) {
+            case Bus::BackupType::Flash64:  backupName = "Flash 64K"; break;
+            case Bus::BackupType::Flash128: backupName = "Flash 128K"; break;
+            case Bus::BackupType::EEPROM:
+                backupName = "EEPROM (unsupported, saves disabled)";
+                break;
+            default: break;
+        }
+        std::printf("Backup type: %s\n", backupName);
         savPath = savePathForROM(opts.romPath);
         if (bus.loadCartridgeData(savPath)) {
             std::printf("Loaded save data from %s\n", savPath.c_str());

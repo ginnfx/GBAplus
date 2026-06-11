@@ -41,6 +41,7 @@ private:
     void renderScanline(int line);
     void renderMode0(int line);
     void renderMode3(int line);
+    void renderMode4(int line);
     void renderBackgroundLine(int bg, int line, int priority,
                               uint32_t* colors, int* priorities);
     void renderSpritesLine(int line, uint32_t* colors,
