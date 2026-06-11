@@ -120,9 +120,7 @@ int runEmulator(const Options& opts) {
         switch (bus.backupType()) {
             case Bus::BackupType::Flash64:  backupName = "Flash 64K"; break;
             case Bus::BackupType::Flash128: backupName = "Flash 128K"; break;
-            case Bus::BackupType::EEPROM:
-                backupName = "EEPROM (unsupported, saves disabled)";
-                break;
+            case Bus::BackupType::EEPROM: backupName = "EEPROM"; break;
             default: break;
         }
         std::printf("Backup type: %s\n", backupName);

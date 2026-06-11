@@ -52,7 +52,7 @@ uint32_t Bus::mirrorVRAM(uint32_t addr) {
     return offset;
 }
 
-uint8_t Bus::read8(uint32_t addr) const {
+uint8_t Bus::read8(uint32_t addr) {
     switch (addr >> 24) {
         case 0x00:
             if (addr < BIOS_SIZE) {
@@ -76,12 +76,16 @@ uint8_t Bus::read8(uint32_t addr) const {
             return vram[mirrorVRAM(addr)];
         case 0x07:
             return oam[addr & (OAM_SIZE - 1)];
+        case 0x0D:
+            if (backup == BackupType::EEPROM) {
+                return eepromReadBit(addr);
+            }
+            [[fallthrough]];
         case 0x08:
         case 0x09:
         case 0x0A:
         case 0x0B:
-        case 0x0C:
-        case 0x0D: {
+        case 0x0C: {
             uint32_t offset = addr & (ROM_MAX - 1);
             if (offset < rom.size()) {
                 return rom[offset];
@@ -98,13 +102,13 @@ uint8_t Bus::read8(uint32_t addr) const {
     }
 }
 
-uint16_t Bus::read16(uint32_t addr) const {
+uint16_t Bus::read16(uint32_t addr) {
     addr &= ~1u;
     return static_cast<uint16_t>(read8(addr)) |
            static_cast<uint16_t>(read8(addr + 1)) << 8;
 }
 
-uint32_t Bus::read32(uint32_t addr) const {
+uint32_t Bus::read32(uint32_t addr) {
     addr &= ~3u;
     return static_cast<uint32_t>(read16(addr)) |
            static_cast<uint32_t>(read16(addr + 2)) << 16;
@@ -163,13 +167,18 @@ void Bus::write8(uint32_t addr, uint8_t value) {
         case 0x0F:
             backupWrite(addr, value);
             return;
+        case 0x0D:
+            if (backup == BackupType::EEPROM) {
+                eepromWriteBit(addr, value);
+                return;
+            }
+            [[fallthrough]];
         case 0x00:
         case 0x08:
         case 0x09:
         case 0x0A:
         case 0x0B:
         case 0x0C:
-        case 0x0D:
             TRACE_LOG("ignored write8 to read-only region 0x%08X", addr);
             return;
         default:
@@ -306,6 +315,86 @@ void Bus::flashWrite(uint32_t offset, uint8_t value) {
     flashState = FlashState::Ready;
 }
 
+void Bus::eepromWriteBit(uint32_t addr, uint8_t value) {
+    if (addr & 1) {
+        return;
+    }
+    eepromReadActive = false;
+    eepromBits.push_back(value & 1);
+}
+
+uint8_t Bus::eepromReadBit(uint32_t addr) {
+    if (addr & 1) {
+        return 0;
+    }
+    if (!eepromReadActive && !eepromBits.empty()) {
+        eepromInterpretRequest();
+    }
+    if (eepromReadActive) {
+        const int pos = eepromReadPos++;
+        if (eepromReadPos >= 68) {
+            eepromReadActive = false;
+        }
+        if (pos < 4) {
+            return 0;
+        }
+        return static_cast<uint8_t>(
+            (eepromReadValue >> (63 - (pos - 4))) & 1);
+    }
+    return 1;
+}
+
+void Bus::eepromSetAddrBits(int addrBits) {
+    if (eepromAddrBits == 0) {
+        eepromAddrBits = addrBits;
+        backupMem.resize(addrBits == 6 ? 512 : 0x2000, 0xFF);
+        TRACE_LOG("EEPROM sized: %d-bit addressing", addrBits);
+    }
+}
+
+void Bus::eepromInterpretRequest() {
+    const std::vector<uint8_t> bits = std::move(eepromBits);
+    eepromBits.clear();
+    const int len = static_cast<int>(bits.size());
+    if (len < 3 || bits[0] != 1) {
+        TRACE_LOG("EEPROM: malformed %d-bit request", len);
+        return;
+    }
+
+    const int addrBits = bits[1] ? len - 3 : len - 67;
+    if (addrBits != 6 && addrBits != 14) {
+        TRACE_LOG("EEPROM: bad request length %d", len);
+        return;
+    }
+    eepromSetAddrBits(addrBits);
+
+    uint32_t block = 0;
+    for (int i = 0; i < addrBits; ++i) {
+        block = (block << 1) | bits[2 + i];
+    }
+    block &= (backupMem.size() / 8) - 1;
+
+    if (bits[1]) {
+        eepromReadValue = 0;
+        for (int i = 0; i < 8; ++i) {
+            eepromReadValue =
+                (eepromReadValue << 8) | backupMem[block * 8 + i];
+        }
+        eepromReadActive = true;
+        eepromReadPos = 0;
+    } else {
+        uint64_t value = 0;
+        for (int i = 0; i < 64; ++i) {
+            value = (value << 1) | bits[2 + addrBits + i];
+        }
+        for (int i = 0; i < 8; ++i) {
+            backupMem[block * 8 + i] =
+                static_cast<uint8_t>(value >> (8 * (7 - i)));
+        }
+        sramWritten = true;
+    }
+}
+
 void Bus::detectBackupType() {
     auto contains = [this](const char* id) {
         const size_t len = std::strlen(id);
@@ -324,8 +413,10 @@ void Bus::detectBackupType() {
         backupMem.assign(0x10000, 0xFF);
     } else if (contains("EEPROM_V")) {
         backup = BackupType::EEPROM;
-        backupMem.assign(SRAM_SIZE, 0);
-        TRACE_LOG("EEPROM cartridge detected; not yet emulated");
+        backupMem.assign(0x2000, 0xFF);
+        eepromAddrBits = 0;
+        eepromBits.clear();
+        eepromReadActive = false;
     } else {
         backup = BackupType::SRAM;
         backupMem.assign(SRAM_SIZE, 0);
