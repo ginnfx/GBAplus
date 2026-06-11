@@ -127,7 +127,7 @@ void PPU::renderMode4(int line) {
     }
 
     if (dispcnt & DISPCNT_OBJ_ON) {
-        renderSpritesLine(line, colors, priorities, nullptr);
+        renderSpritesLine(line, colors, priorities, nullptr, nullptr);
     }
 
     for (int x = 0; x < SCREEN_WIDTH; ++x) {
@@ -146,9 +146,14 @@ void PPU::renderTiledLine(int line, unsigned textMask, unsigned affineMask) {
         priorities[x] = PRIORITY_BACKDROP;
     }
 
+    uint8_t objWinBuf[SCREEN_WIDTH] = {0};
+    if ((dispcnt & DISPCNT_OBJWIN) && (dispcnt & DISPCNT_OBJ_ON)) {
+        renderSpritesLine(line, nullptr, nullptr, nullptr, objWinBuf);
+    }
+
     uint8_t winMaskBuf[SCREEN_WIDTH];
     const uint8_t* winMask =
-        computeWindowMask(line, winMaskBuf) ? winMaskBuf : nullptr;
+        computeWindowMask(line, winMaskBuf, objWinBuf) ? winMaskBuf : nullptr;
 
     for (int priority = 3; priority >= 0; --priority) {
         for (int bg = 3; bg >= 0; --bg) {
@@ -170,7 +175,7 @@ void PPU::renderTiledLine(int line, unsigned textMask, unsigned affineMask) {
     }
 
     if (dispcnt & DISPCNT_OBJ_ON) {
-        renderSpritesLine(line, colors, priorities, winMask);
+        renderSpritesLine(line, colors, priorities, winMask, nullptr);
     }
 
     for (int x = 0; x < SCREEN_WIDTH; ++x) {
@@ -302,7 +307,8 @@ void PPU::advanceAffineReferences() {
     }
 }
 
-bool PPU::computeWindowMask(int line, uint8_t* mask) const {
+bool PPU::computeWindowMask(int line, uint8_t* mask,
+                            const uint8_t* objWin) const {
     const uint16_t dispcnt = bus.read16(REG_DISPCNT);
     const bool win0 = dispcnt & DISPCNT_WIN0;
     const bool win1 = dispcnt & DISPCNT_WIN1;
@@ -316,6 +322,7 @@ bool PPU::computeWindowMask(int line, uint8_t* mask) const {
     const uint8_t in0 = winin & 0x3F;
     const uint8_t in1 = (winin >> 8) & 0x3F;
     const uint8_t out = winout & 0x3F;
+    const uint8_t obj = (winout >> 8) & 0x3F;
 
     auto edges = [](uint16_t v, int& lo, int& hi) {
         lo = (v >> 8) & 0xFF;
@@ -338,6 +345,8 @@ bool PPU::computeWindowMask(int line, uint8_t* mask) const {
             mask[x] = in0;
         } else if (on1 && inside(x, x1lo, x1hi)) {
             mask[x] = in1;
+        } else if (objwin && objWin[x]) {
+            mask[x] = obj;
         } else {
             mask[x] = out;
         }
@@ -346,8 +355,10 @@ bool PPU::computeWindowMask(int line, uint8_t* mask) const {
 }
 
 void PPU::renderSpritesLine(int line, uint32_t* colors,
-                            const int* priorities, const uint8_t* winMask) {
+                            const int* priorities, const uint8_t* winMask,
+                            uint8_t* objWin) {
     const bool map1D = bus.read16(REG_DISPCNT) & DISPCNT_OBJ_1D;
+    const bool objWinPass = objWin != nullptr;
 
     for (int obj = 127; obj >= 0; --obj) {
         const uint32_t entry = OAM_BASE + static_cast<uint32_t>(obj) * 8;
@@ -361,6 +372,10 @@ void PPU::renderSpritesLine(int line, uint32_t* colors,
         }
         const uint32_t shape = attr0 >> 14;
         if (shape == 3) {
+            continue;
+        }
+        const uint32_t objMode = (attr0 >> 10) & 3;
+        if (objWinPass ? (objMode != 2) : (objMode == 2)) {
             continue;
         }
         const uint32_t sizeIdx = attr1 >> 14;
@@ -409,11 +424,13 @@ void PPU::renderSpritesLine(int line, uint32_t* colors,
             if (sx < 0 || sx >= SCREEN_WIDTH) {
                 continue;
             }
-            if (winMask && !(winMask[sx] & (1u << 4))) {
-                continue;
-            }
-            if (priority > priorities[sx]) {
-                continue;
+            if (!objWinPass) {
+                if (winMask && !(winMask[sx] & (1u << 4))) {
+                    continue;
+                }
+                if (priority > priorities[sx]) {
+                    continue;
+                }
             }
             int col;
             int texRow;
@@ -453,6 +470,10 @@ void PPU::renderSpritesLine(int line, uint32_t* colors,
                 }
             }
             if (colorIndex == 0) {
+                continue;
+            }
+            if (objWinPass) {
+                objWin[sx] = 1;
                 continue;
             }
             colors[sx] = objPaletteColor(colorIndex);

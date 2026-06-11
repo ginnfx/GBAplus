@@ -542,6 +542,55 @@ void testWindows(Bus& bus) {
           "0x%08X)", at(7, 5));
 }
 
+void testObjWindow(Bus& bus) {
+    std::printf("Test: OBJ window\n");
+    PPU ppu(bus);
+
+    bus.write16(0x04000008, 0x0800);
+    bus.write16(0x05000000, 0x7C00);
+    bus.write16(0x05000002, 0x001F);
+    bus.write16(0x05000204, 0x03E0);
+
+    for (uint32_t i = 0; i < 32; ++i) {
+        bus.write8(0x06000000 + 32 + i, 0x11);
+        bus.write8(0x06010000 + 2 * 32 + i, 0x22);
+    }
+    for (uint32_t i = 0; i < 1024; ++i) {
+        bus.write16(0x06004000 + i * 2, 0x0001);
+    }
+
+    bus.write16(0x07000000, 0x0808);
+    bus.write16(0x07000002, 0x0008);
+    bus.write16(0x07000004, 0x0002);
+
+    bus.write16(0x04000048, 0x0000);
+    bus.write16(0x0400004A, 0x0100);
+    bus.write16(0x04000000, 0x9140);
+
+    ppu.step(PPU::CYCLES_SCANLINE * PPU::LINES_TOTAL);
+    ppu.frameReady();
+    const auto& fb = ppu.framebuffer();
+    auto at = [&fb](int x, int y) { return fb[y * 240 + x]; };
+    const uint32_t RED = 0xFF0000FF, BLUE = 0x0000FFFF;
+
+    CHECK(at(10, 10) == RED,
+          "inside OBJ window: BG0 draws, sprite invisible (got 0x%08X)",
+          at(10, 10));
+    CHECK(at(16, 10) == BLUE,
+          "just outside the sprite box -> backdrop (got 0x%08X)", at(16, 10));
+    CHECK(at(50, 50) == BLUE,
+          "outside OBJ window -> backdrop (got 0x%08X)", at(50, 50));
+
+    bus.write16(0x04000000, 0x1140);
+    ppu.step(PPU::CYCLES_SCANLINE * PPU::LINES_TOTAL);
+    ppu.frameReady();
+    CHECK(at(10, 10) == RED,
+          "OBJ-window sprite never draws as a visible sprite (got 0x%08X)",
+          at(10, 10));
+    CHECK(at(50, 50) == RED, "no window: BG0 everywhere (got 0x%08X)",
+          at(50, 50));
+}
+
 void testSRAMPersistence(Bus& bus) {
     std::printf("Test: SRAM persistence\n");
 
@@ -1281,6 +1330,10 @@ int main() {
     {
         Bus bus;
         testWindows(bus);
+    }
+    {
+        Bus bus;
+        testObjWindow(bus);
     }
     {
         Bus bus;

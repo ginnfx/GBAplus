@@ -40,12 +40,14 @@ private:
     void renderAffineLine(int bg, int priority, uint32_t* colors,
                           int* priorities, const uint8_t* winMask);
 
-    bool computeWindowMask(int line, uint8_t* mask) const;
+    bool computeWindowMask(int line, uint8_t* mask,
+                           const uint8_t* objWin) const;
 
     void latchAffineReferences();
     void advanceAffineReferences();
     void renderSpritesLine(int line, uint32_t* colors,
-                           const int* priorities, const uint8_t* winMask);
+                           const int* priorities, const uint8_t* winMask,
+                           uint8_t* objWin);
 
     uint32_t paletteColor(uint32_t index) const;
     uint32_t objPaletteColor(uint32_t index) const;
