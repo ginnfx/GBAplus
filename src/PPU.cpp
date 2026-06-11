@@ -65,6 +65,9 @@ void PPU::renderScanline(int line) {
         case 3:
             renderMode3(line);
             break;
+        case 4:
+            renderMode4(line);
+            break;
         default:
             TRACE_LOG("renderScanline: unimplemented video mode %u", mode);
             for (int x = 0; x < SCREEN_WIDTH; ++x) {
@@ -79,6 +82,39 @@ void PPU::renderMode3(int line) {
         const uint32_t addr =
             VRAM_BASE + static_cast<uint32_t>(line * SCREEN_WIDTH + x) * 2;
         fb[line * SCREEN_WIDTH + x] = bgr555ToRGBA(bus.read16(addr));
+    }
+}
+
+void PPU::renderMode4(int line) {
+    const uint16_t dispcnt = bus.read16(REG_DISPCNT);
+    const uint32_t page = (dispcnt & (1u << 4)) ? 0xA000u : 0u;
+    const uint16_t bg2cnt = bus.read16(REG_BG0CNT + 4);
+    const int bgPriority = bg2cnt & 3;
+    const bool bg2on = dispcnt & (1u << 10);
+
+    uint32_t colors[SCREEN_WIDTH];
+    int priorities[SCREEN_WIDTH];
+    const uint32_t backdrop = paletteColor(0);
+    for (int x = 0; x < SCREEN_WIDTH; ++x) {
+        colors[x] = backdrop;
+        priorities[x] = PRIORITY_BACKDROP;
+        if (bg2on) {
+            const uint8_t index = bus.read8(
+                VRAM_BASE + page +
+                static_cast<uint32_t>(line * SCREEN_WIDTH + x));
+            if (index != 0) {
+                colors[x] = paletteColor(index);
+                priorities[x] = bgPriority;
+            }
+        }
+    }
+
+    if (dispcnt & DISPCNT_OBJ_ON) {
+        renderSpritesLine(line, colors, priorities);
+    }
+
+    for (int x = 0; x < SCREEN_WIDTH; ++x) {
+        fb[line * SCREEN_WIDTH + x] = colors[x];
     }
 }
 

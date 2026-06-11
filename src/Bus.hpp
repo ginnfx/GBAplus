@@ -11,6 +11,13 @@ class Timers;
 
 class Bus {
 public:
+    enum class BackupType {
+        SRAM,
+        Flash64,
+        Flash128,
+        EEPROM,
+    };
+
     static constexpr uint16_t IRQ_VBLANK = 1u << 0;
     static constexpr uint16_t IRQ_HBLANK = 1u << 1;
     static constexpr uint16_t IRQ_VCOUNT = 1u << 2;
@@ -39,6 +46,7 @@ public:
     bool loadCartridgeData(const std::string& filepath);
     bool saveCartridgeData(const std::string& filepath) const;
     bool sramDirty() const { return sramWritten; }
+    BackupType backupType() const { return backup; }
 
     void attachDMA(DMA* controller) { dma = controller; }
     void attachTimers(Timers* controller) { timers = controller; }
@@ -69,7 +77,7 @@ private:
     std::array<uint8_t, PALETTE_SIZE> palette{};
     std::array<uint8_t, VRAM_SIZE>    vram{};
     std::array<uint8_t, OAM_SIZE>     oam{};
-    std::array<uint8_t, SRAM_SIZE>    sram{};
+    std::vector<uint8_t>              backupMem;
     std::vector<uint8_t>              rom;
 
     DMA* dma = nullptr;
@@ -77,6 +85,18 @@ private:
     APU* apu = nullptr;
     bool sramWritten = false;
     bool biosLoaded = false;
+
+    enum class FlashState { Ready, Cmd1, Cmd2, Program, Bank };
+    BackupType backup = BackupType::SRAM;
+    FlashState flashState = FlashState::Ready;
+    bool flashIdMode = false;
+    bool flashErasePending = false;
+    uint32_t flashBank = 0;
+
+    void detectBackupType();
+    uint8_t backupRead(uint32_t addr) const;
+    void backupWrite(uint32_t addr, uint8_t value);
+    void flashWrite(uint32_t offset, uint8_t value);
 
     static uint32_t mirrorVRAM(uint32_t addr);
     static uint8_t ioWriteMask(uint32_t offset);

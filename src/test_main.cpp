@@ -111,6 +111,31 @@ void testPPUMode3(Bus& bus) {
           bus.read16(0x04000006));
 }
 
+void testPPUMode4(Bus& bus) {
+    std::printf("Test: PPU mode 4 rendering\n");
+    PPU ppu(bus);
+
+    bus.write16(0x05000000, 0x7C00);
+    bus.write16(0x05000002, 0x001F);
+    bus.write16(0x05000004, 0x03E0);
+
+    bus.write8(0x06000000, 1);
+    bus.write8(0x0600A000, 2);
+
+    bus.write16(0x04000000, 0x0404);
+    ppu.step(PPU::CYCLES_SCANLINE * PPU::LINES_TOTAL);
+    ppu.frameReady();
+    const auto& fb = ppu.framebuffer();
+    CHECK(fb[0] == 0xFF0000FF, "page 0: (0,0) red (got 0x%08X)", fb[0]);
+    CHECK(fb[1] == 0x0000FFFF, "index 0 -> backdrop blue (got 0x%08X)",
+          fb[1]);
+
+    bus.write16(0x04000000, 0x0414);
+    ppu.step(PPU::CYCLES_SCANLINE * PPU::LINES_TOTAL);
+    ppu.frameReady();
+    CHECK(fb[0] == 0x00FF00FF, "page 1: (0,0) green (got 0x%08X)", fb[0]);
+}
+
 void testThumbSwitch(Bus& bus) {
     std::printf("Test: ARM/Thumb state switching\n");
     ARM7TDMI cpu(bus);
@@ -266,6 +291,59 @@ void testSRAMPersistence(Bus& bus) {
           "data survived round trip (0x%02X, 0x%02X)",
           fresh.read8(0x0E000000), fresh.read8(0x0E000123));
     std::remove(savPath.c_str());
+}
+
+void testFlashBackup(Bus& bus) {
+    std::printf("Test: Flash backup\n");
+
+    const std::string romPath = "/tmp/gba_emu_flash_test.gba";
+    {
+        std::FILE* f = std::fopen(romPath.c_str(), "wb");
+        const char pad[16] = {};
+        std::fwrite(pad, 1, sizeof(pad), f);
+        std::fwrite("FLASH1M_V103", 1, 12, f);
+        std::fclose(f);
+    }
+    const bool loaded = bus.loadROM(romPath);
+    std::remove(romPath.c_str());
+    CHECK(loaded && bus.backupType() == Bus::BackupType::Flash128,
+          "FLASH1M_V detected as 128K flash");
+
+    auto command = [&bus](uint8_t cmd) {
+        bus.write8(0x0E005555, 0xAA);
+        bus.write8(0x0E002AAA, 0x55);
+        bus.write8(0x0E005555, cmd);
+    };
+
+    command(0x90);
+    CHECK(bus.read8(0x0E000000) == 0xC2 && bus.read8(0x0E000001) == 0x09,
+          "Macronix 128K chip ID (got 0x%02X 0x%02X)",
+          bus.read8(0x0E000000), bus.read8(0x0E000001));
+    command(0xF0);
+
+    command(0xA0);
+    bus.write8(0x0E001234, 0x5A);
+    CHECK(bus.read8(0x0E001234) == 0x5A, "programmed byte (got 0x%02X)",
+          bus.read8(0x0E001234));
+
+    command(0xB0);
+    bus.write8(0x0E000000, 1);
+    command(0xA0);
+    bus.write8(0x0E001234, 0x77);
+    CHECK(bus.read8(0x0E001234) == 0x77, "bank 1 byte (got 0x%02X)",
+          bus.read8(0x0E001234));
+    command(0xB0);
+    bus.write8(0x0E000000, 0);
+    CHECK(bus.read8(0x0E001234) == 0x5A,
+          "banks hold distinct data (bank 0 got 0x%02X)",
+          bus.read8(0x0E001234));
+
+    command(0x80);
+    bus.write8(0x0E005555, 0xAA);
+    bus.write8(0x0E002AAA, 0x55);
+    bus.write8(0x0E001000, 0x30);
+    CHECK(bus.read8(0x0E001234) == 0xFF, "sector erased (got 0x%02X)",
+          bus.read8(0x0E001234));
 }
 
 void testARMSingleDataTransfer(Bus& bus) {
@@ -505,6 +583,239 @@ void testTimers(Bus& bus) {
           "timer 0 IRQ raised in IF (IF=0x%04X)", bus.read16(0x04000202));
 }
 
+void testSWIArithmetic(Bus& bus) {
+    std::printf("Test: SWI arithmetic (Div/Sqrt/ArcTan2)\n");
+    ARM7TDMI cpu(bus);
+    cpu.reset();
+
+    const uint32_t base = 0x02001400;
+    bus.write32(base + 0x00, 0xEF060000);
+    bus.write32(base + 0x04, 0xEF080000);
+    bus.write32(base + 0x08, 0xEF0A0000);
+    bus.write32(base + 0x0C, 0xEAFFFFFE);
+    cpu.setReg(15, base);
+
+    cpu.setReg(0, static_cast<uint32_t>(-7));
+    cpu.setReg(1, 2);
+    cpu.step();
+    CHECK(cpu.reg(0) == static_cast<uint32_t>(-3) &&
+              cpu.reg(1) == static_cast<uint32_t>(-1) && cpu.reg(3) == 3,
+          "Div -7/2: q=-3 r=-1 abs=3 (got %d %d %u)",
+          static_cast<int32_t>(cpu.reg(0)), static_cast<int32_t>(cpu.reg(1)),
+          cpu.reg(3));
+
+    cpu.setReg(0, 0x00010000);
+    cpu.step();
+    CHECK(cpu.reg(0) == 0x100, "Sqrt 0x10000 == 0x100 (got 0x%X)",
+          cpu.reg(0));
+
+    cpu.setReg(0, 0);
+    cpu.setReg(1, 0x1000);
+    cpu.step();
+    CHECK(cpu.reg(0) == 0x4000, "ArcTan2(0, +y) == 0x4000 (got 0x%04X)",
+          cpu.reg(0));
+}
+
+void testSWICpuSet(Bus& bus) {
+    std::printf("Test: SWI CpuSet/CpuFastSet\n");
+    ARM7TDMI cpu(bus);
+    cpu.reset();
+
+    const uint32_t base = 0x02001500;
+    bus.write32(base + 0x00, 0xEF0B0000);
+    bus.write32(base + 0x04, 0xEF0B0000);
+    bus.write32(base + 0x08, 0xEF0C0000);
+    bus.write32(base + 0x0C, 0xEAFFFFFE);
+    cpu.setReg(15, base);
+
+    const uint32_t src = 0x02002000;
+    for (uint32_t i = 0; i < 4; ++i) {
+        bus.write32(src + i * 4, 0xCAFE0000 + i);
+    }
+    cpu.setReg(0, src);
+    cpu.setReg(1, 0x02002100);
+    cpu.setReg(2, 4 | (1u << 26));
+    cpu.step();
+    bool match = true;
+    for (uint32_t i = 0; i < 4; ++i) {
+        match = match && bus.read32(0x02002100 + i * 4) == 0xCAFE0000 + i;
+    }
+    CHECK(match, "CpuSet copied 4 words");
+
+    bus.write16(0x02002200, 0xBEEF);
+    cpu.setReg(0, 0x02002200);
+    cpu.setReg(1, 0x02002280);
+    cpu.setReg(2, 8 | (1u << 24));
+    cpu.step();
+    CHECK(bus.read16(0x02002280) == 0xBEEF &&
+              bus.read16(0x0200228E) == 0xBEEF,
+          "CpuSet halfword fill (got 0x%04X, 0x%04X)",
+          bus.read16(0x02002280), bus.read16(0x0200228E));
+
+    bus.write32(0x02002300, 0xDEADBEEF);
+    cpu.setReg(0, 0x02002300);
+    cpu.setReg(1, 0x02002380);
+    cpu.setReg(2, 8 | (1u << 24));
+    cpu.step();
+    CHECK(bus.read32(0x02002380) == 0xDEADBEEF &&
+              bus.read32(0x0200239C) == 0xDEADBEEF,
+          "CpuFastSet word fill (got 0x%08X)", bus.read32(0x0200239C));
+}
+
+void testSWIDecompression(Bus& bus) {
+    std::printf("Test: SWI decompression\n");
+    ARM7TDMI cpu(bus);
+    cpu.reset();
+
+    const uint32_t base = 0x02001600;
+    bus.write32(base + 0x00, 0xEF110000);
+    bus.write32(base + 0x04, 0xEF140000);
+    bus.write32(base + 0x08, 0xEF100000);
+    bus.write32(base + 0x0C, 0xEF130000);
+    bus.write32(base + 0x10, 0xEAFFFFFE);
+    cpu.setReg(15, base);
+
+    const uint32_t lzSrc = 0x02002400;
+    bus.write32(lzSrc, (8u << 8) | 0x10);
+    const uint8_t lzStream[] = {0x08, 'A', 'B', 'C', 'D', 0x10, 0x03};
+    for (uint32_t i = 0; i < sizeof(lzStream); ++i) {
+        bus.write8(lzSrc + 4 + i, lzStream[i]);
+    }
+    cpu.setReg(0, lzSrc);
+    cpu.setReg(1, 0x02002500);
+    cpu.step();
+    CHECK(bus.read32(0x02002500) == 0x44434241 &&
+              bus.read32(0x02002504) == 0x44434241,
+          "LZ77 -> ABCDABCD (got 0x%08X 0x%08X)", bus.read32(0x02002500),
+          bus.read32(0x02002504));
+
+    const uint32_t rlSrc = 0x02002600;
+    bus.write32(rlSrc, (7u << 8) | 0x30);
+    const uint8_t rlStream[] = {0x82, 0x77, 0x01, 0x11, 0x22};
+    for (uint32_t i = 0; i < sizeof(rlStream); ++i) {
+        bus.write8(rlSrc + 4 + i, rlStream[i]);
+    }
+    cpu.setReg(0, rlSrc);
+    cpu.setReg(1, 0x02002700);
+    cpu.step();
+    CHECK(bus.read32(0x02002700) == 0x77777777 &&
+              bus.read8(0x02002704) == 0x77 &&
+              bus.read8(0x02002705) == 0x11 &&
+              bus.read8(0x02002706) == 0x22,
+          "RL run + literals (got 0x%08X ...%02X %02X %02X)",
+          bus.read32(0x02002700), bus.read8(0x02002704),
+          bus.read8(0x02002705), bus.read8(0x02002706));
+
+    const uint32_t buSrc = 0x02002800;
+    const uint8_t packed[] = {0x21, 0x43, 0x65, 0x87};
+    for (uint32_t i = 0; i < 4; ++i) {
+        bus.write8(buSrc + i, packed[i]);
+    }
+    const uint32_t info = 0x02002810;
+    bus.write16(info, 4);
+    bus.write8(info + 2, 4);
+    bus.write8(info + 3, 8);
+    bus.write32(info + 4, 0x10);
+    cpu.setReg(0, buSrc);
+    cpu.setReg(1, 0x02002900);
+    cpu.setReg(2, info);
+    cpu.step();
+    CHECK(bus.read32(0x02002900) == 0x14131211 &&
+              bus.read32(0x02002904) == 0x18171615,
+          "BitUnPack 4->8 bit +0x10 (got 0x%08X 0x%08X)",
+          bus.read32(0x02002900), bus.read32(0x02002904));
+
+    const uint32_t huffSrc = 0x02002A00;
+    bus.write32(huffSrc, (4u << 8) | 0x28);
+    bus.write8(huffSrc + 4, 1);
+    bus.write8(huffSrc + 5, 0xC0);
+    bus.write8(huffSrc + 6, 'A');
+    bus.write8(huffSrc + 7, 'B');
+    bus.write32(huffSrc + 8, 0x50000000);
+    cpu.setReg(0, huffSrc);
+    cpu.setReg(1, 0x02002B00);
+    cpu.step();
+    CHECK(bus.read32(0x02002B00) == 0x42414241,
+          "Huffman -> ABAB (got 0x%08X)", bus.read32(0x02002B00));
+}
+
+void testSWIIntrWait(Bus& bus) {
+    std::printf("Test: SWI VBlankIntrWait\n");
+    ARM7TDMI cpu(bus);
+    PPU ppu(bus);
+    cpu.reset();
+
+    const uint32_t handler = 0x03000200;
+    bus.write32(handler + 0x00, 0xE3A00301);
+    bus.write32(handler + 0x04, 0xE3A01001);
+    bus.write32(handler + 0x08, 0xE5C01202);
+    bus.write32(handler + 0x0C, 0xE3A02403);
+    bus.write32(handler + 0x10, 0xE3822C7F);
+    bus.write32(handler + 0x14, 0xE38220F8);
+    bus.write32(handler + 0x18, 0xE1D230B0);
+    bus.write32(handler + 0x1C, 0xE3833001);
+    bus.write32(handler + 0x20, 0xE1C230B0);
+    bus.write32(handler + 0x24, 0xE12FFF1E);
+    bus.write32(0x03007FFC, handler);
+
+    bus.write16(0x04000004, 1u << 3);
+    bus.write16(0x04000200, 0x0001);
+
+    const uint32_t prog = 0x02001700;
+    bus.write32(prog + 0x00, 0xEF050000);
+    bus.write32(prog + 0x04, 0xE3A07001);
+    bus.write32(prog + 0x08, 0xEAFFFFFE);
+    cpu.setReg(7, 0);
+    cpu.setReg(15, prog);
+
+    for (int i = 0; i < 10000; ++i) {
+        cpu.step();
+        ppu.step(4);
+    }
+    CHECK(cpu.isHalted() && cpu.reg(7) == 0,
+          "CPU asleep mid-frame (halted=%d, r7=%u)", cpu.isHalted(),
+          cpu.reg(7));
+
+    for (int i = 0; i < 70000; ++i) {
+        cpu.step();
+        ppu.step(4);
+    }
+    CHECK(cpu.reg(7) == 1, "resumed after VBlank: r7 == 1 (got %u)",
+          cpu.reg(7));
+    CHECK(cpu.reg(15) == prog + 8 + 8, "parked after resume (PC=0x%08X)",
+          cpu.reg(15));
+    CHECK((bus.read16(0x03007FF8) & 1) == 0,
+          "IF-shadow bit consumed by IntrWait (shadow=0x%04X)",
+          bus.read16(0x03007FF8));
+}
+
+void testSwap(Bus& bus) {
+    std::printf("Test: SWP/SWPB\n");
+    ARM7TDMI cpu(bus);
+    cpu.reset();
+
+    const uint32_t base = 0x02001800;
+    const uint32_t addr = 0x02003000;
+    bus.write32(addr, 0x11223344);
+    bus.write32(base + 0x00, 0xE1002091);
+    bus.write32(base + 0x04, 0xE1403094);
+    bus.write32(base + 0x08, 0xEAFFFFFE);
+    cpu.setReg(0, addr);
+    cpu.setReg(1, 0xAABBCCDD);
+    cpu.setReg(4, 0xEE);
+    cpu.setReg(15, base);
+
+    cpu.step();
+    CHECK(cpu.reg(2) == 0x11223344 && bus.read32(addr) == 0xAABBCCDD,
+          "SWP swapped word (r2=0x%08X mem=0x%08X)", cpu.reg(2),
+          bus.read32(addr));
+
+    cpu.step();
+    CHECK(cpu.reg(3) == 0xDD && bus.read8(addr) == 0xEE,
+          "SWPB swapped byte (r3=0x%02X mem=0x%02X)", cpu.reg(3),
+          bus.read8(addr));
+}
+
 void testAPUSquare(Bus& bus) {
     std::printf("Test: APU square channel\n");
     APU apu(bus);
@@ -600,6 +911,10 @@ int main() {
     }
     {
         Bus bus;
+        testPPUMode4(bus);
+    }
+    {
+        Bus bus;
         testThumbSwitch(bus);
     }
     {
@@ -621,6 +936,10 @@ int main() {
     {
         Bus bus;
         testSRAMPersistence(bus);
+    }
+    {
+        Bus bus;
+        testFlashBackup(bus);
     }
     {
         Bus bus;
@@ -649,6 +968,26 @@ int main() {
     {
         Bus bus;
         testTimers(bus);
+    }
+    {
+        Bus bus;
+        testSWIArithmetic(bus);
+    }
+    {
+        Bus bus;
+        testSWICpuSet(bus);
+    }
+    {
+        Bus bus;
+        testSWIDecompression(bus);
+    }
+    {
+        Bus bus;
+        testSWIIntrWait(bus);
+    }
+    {
+        Bus bus;
+        testSwap(bus);
     }
     {
         Bus bus;

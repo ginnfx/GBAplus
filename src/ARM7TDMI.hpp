@@ -45,6 +45,8 @@ public:
     Mode currentMode() const { return static_cast<Mode>(cpsr & MODE_MASK); }
     bool inThumbState() const { return cpsr & BIT_T; }
 
+    bool isHalted() const { return halted; }
+
     void switchMode(Mode newMode);
 
     void flushPipeline();
@@ -92,6 +94,8 @@ private:
     void armMultiply(uint32_t opcode);
     void armMultiplyLong(uint32_t opcode);
     void armPSRTransfer(uint32_t opcode);
+    void armSwap(uint32_t opcode);
+    void armSoftwareInterrupt(uint32_t opcode);
     void armUnimplemented(uint32_t opcode);
 
     void thumbShifted(uint16_t opcode);
@@ -111,7 +115,23 @@ private:
     void thumbCondBranch(uint16_t opcode);
     void thumbBranch(uint16_t opcode);
     void thumbLongBranch(uint16_t opcode);
+    void thumbSoftwareInterrupt(uint16_t opcode);
     void thumbUnimplemented(uint16_t opcode);
+
+    void softwareInterrupt(uint32_t number);
+    void hleSWI(uint32_t number);
+    void swiSoftReset();
+    void swiRegisterRamReset(uint32_t flags);
+    void swiIntrWait(uint32_t discardOld, uint32_t mask);
+    void swiDiv(int32_t numerator, int32_t denominator);
+    void swiArcTan();
+    void swiArcTan2();
+    void swiCpuSet();
+    void swiCpuFastSet();
+    void swiBitUnPack();
+    void swiLZ77UnComp();
+    void swiHuffUnComp();
+    void swiRLUnComp();
 
     uint32_t aluAdd(uint32_t a, uint32_t b, uint32_t carryIn, bool setFlags);
     void setNZ(uint32_t result);
@@ -132,6 +152,10 @@ private:
 
     std::array<uint32_t, 2> pipeline{};
     bool pipelineFlushed = false;
+
+    bool halted = false;
+    bool intrWaiting = false;
+    uint32_t intrWaitMask = 0;
 
     std::FILE* traceFile = nullptr;
 };

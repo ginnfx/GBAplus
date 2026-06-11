@@ -90,9 +90,26 @@ void ARM7TDMI::hleIrqReturn() {
     setCPSR(getSPSR());
     regs[15] = resumeAddr;
     flushPipeline();
+
+    if (intrWaiting) {
+        const uint16_t shadow = bus.read16(0x03007FF8);
+        if (shadow & intrWaitMask) {
+            bus.write16(0x03007FF8,
+                        shadow & static_cast<uint16_t>(~intrWaitMask));
+            intrWaiting = false;
+        } else {
+            halted = true;
+        }
+    }
 }
 
 void ARM7TDMI::step() {
+    if (halted) {
+        if ((bus.read16(0x04000200) & bus.read16(0x04000202)) == 0) {
+            return;
+        }
+        halted = false;
+    }
     if (irqPending()) {
         enterIRQ();
     }
@@ -229,7 +246,9 @@ const std::array<ARM7TDMI::ArmHandler, 4096>& ARM7TDMI::armTable() {
             const uint32_t low4 = idx & 0xF;
             ArmHandler handler = &ARM7TDMI::armUnimplemented;
 
-            if ((top8 & 0xE0) == 0xA0) {
+            if ((top8 & 0xF0) == 0xF0) {
+                handler = &ARM7TDMI::armSoftwareInterrupt;
+            } else if ((top8 & 0xE0) == 0xA0) {
                 handler = &ARM7TDMI::armBranch;
             } else if (top8 == 0x12 && (low4 == 0x1 || low4 == 0x3)) {
                 handler = &ARM7TDMI::armBranchExchange;
@@ -243,6 +262,8 @@ const std::array<ARM7TDMI::ArmHandler, 4096>& ARM7TDMI::armTable() {
                         handler = &ARM7TDMI::armMultiply;
                     } else if ((top8 & 0xF8) == 0x08) {
                         handler = &ARM7TDMI::armMultiplyLong;
+                    } else if ((top8 & 0xFB) == 0x10) {
+                        handler = &ARM7TDMI::armSwap;
                     }
                 } else if (!(top8 & 0x20) && (low4 & 0x9) == 0x9) {
                     handler = &ARM7TDMI::armHalfwordTransfer;
@@ -686,6 +707,48 @@ void ARM7TDMI::armPSRTransfer(uint32_t opcode) {
     setCPSR((cpsr & ~mask) | (value & mask));
 }
 
+void ARM7TDMI::armSwap(uint32_t opcode) {
+    const bool byte = opcode & (1u << 22);
+    const uint32_t addr = regs[(opcode >> 16) & 0xF];
+    const uint32_t rd = (opcode >> 12) & 0xF;
+    const uint32_t rm = opcode & 0xF;
+
+    if (byte) {
+        const uint8_t old = bus.read8(addr);
+        bus.write8(addr, static_cast<uint8_t>(regs[rm]));
+        regs[rd] = old;
+    } else {
+        uint32_t old = bus.read32(addr);
+        const uint32_t rot = (addr & 3) * 8;
+        old = std::rotr(old, static_cast<int>(rot));
+        bus.write32(addr, regs[rm]);
+        regs[rd] = old;
+    }
+}
+
+void ARM7TDMI::armSoftwareInterrupt(uint32_t opcode) {
+    softwareInterrupt((opcode >> 16) & 0xFF);
+}
+
+void ARM7TDMI::thumbSoftwareInterrupt(uint16_t opcode) {
+    softwareInterrupt(opcode & 0xFF);
+}
+
+void ARM7TDMI::softwareInterrupt(uint32_t number) {
+    if (bus.hasBIOS()) {
+        const uint32_t oldCpsr = cpsr;
+        const uint32_t returnAddr = regs[15] - (inThumbState() ? 2 : 4);
+        switchMode(Mode::Supervisor);
+        spsrBank[BANK_SVC] = oldCpsr;
+        regs[14] = returnAddr;
+        cpsr = (cpsr & ~BIT_T) | BIT_I;
+        regs[15] = 0x00000008;
+        flushPipeline();
+        return;
+    }
+    hleSWI(number);
+}
+
 void ARM7TDMI::armUnimplemented(uint32_t opcode) {
     TRACE_LOG("unimplemented ARM opcode 0x%08X @ 0x%08X", opcode,
               regs[15] - 8);
@@ -751,7 +814,7 @@ const std::array<ARM7TDMI::ThumbHandler, 256>& ARM7TDMI::thumbTable() {
             } else if ((i & 0xF0) == 0xC0) {
                 h = &ARM7TDMI::thumbMultiple;
             } else if (i == 0xDF) {
-                h = &ARM7TDMI::thumbUnimplemented;
+                h = &ARM7TDMI::thumbSoftwareInterrupt;
             } else if ((i & 0xF0) == 0xD0) {
                 h = &ARM7TDMI::thumbCondBranch;
             } else if ((i & 0xF8) == 0xE0) {

@@ -17,6 +17,7 @@ find_package(SDL2 REQUIRED)
 add_library(gba_core STATIC
     src/Bus.cpp
     src/ARM7TDMI.cpp
+    src/ARM7TDMI_swi.cpp
     src/PPU.cpp
     src/DMA.cpp
     src/Timers.cpp
