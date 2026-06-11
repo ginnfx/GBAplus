@@ -743,6 +743,109 @@ void testBlending(Bus& bus) {
           "semi-transparent sprite alpha over BG0 (got 0x%08X)", fb[0]);
 }
 
+// Mosaic: BG horizontal/vertical block quantization, the BGxCNT gate, and
+// OBJ mosaic quantizing relative to the sprite's own origin.
+void testMosaic(Bus& bus) {
+    std::printf("Test: mosaic\n");
+    PPU ppu(bus);
+
+    bus.write16(0x05000000, 0x0000);  // backdrop black
+    bus.write16(0x05000002, 0x001F);  // palette 1: red
+    bus.write16(0x05000004, 0x03E0);  // palette 2: green
+    bus.write16(0x05000006, 0x7C00);  // palette 3: blue
+    bus.write16(0x05000202, 0x001F);  // OBJ palette 1: red
+    bus.write16(0x05000204, 0x03E0);  // OBJ palette 2: green
+    bus.write16(0x05000206, 0x7C00);  // OBJ palette 3: blue
+
+    // Tile 1: columns cycle red/green/blue (per-column colour). Each 4bpp
+    // row is bytes (c1<<4|c0)=0x21, (c3<<4|c2)=0x13, 0x32, 0x21.
+    for (uint32_t r = 0; r < 8; ++r) {
+        bus.write8(0x06000000 + 32 + r * 4 + 0, 0x21);
+        bus.write8(0x06000000 + 32 + r * 4 + 1, 0x13);
+        bus.write8(0x06000000 + 32 + r * 4 + 2, 0x32);
+        bus.write8(0x06000000 + 32 + r * 4 + 3, 0x21);
+        // OBJ tile 1: same per-column layout in the OBJ char block.
+        bus.write8(0x06010000 + 32 + r * 4 + 0, 0x21);
+        bus.write8(0x06010000 + 32 + r * 4 + 1, 0x13);
+        bus.write8(0x06010000 + 32 + r * 4 + 2, 0x32);
+        bus.write8(0x06010000 + 32 + r * 4 + 3, 0x21);
+    }
+    // Tile 2: each row is a solid colour (r%3)+1 (per-row colour).
+    for (uint32_t r = 0; r < 8; ++r) {
+        const uint8_t c = static_cast<uint8_t>((r % 3) + 1);
+        const uint8_t b = static_cast<uint8_t>((c << 4) | c);
+        for (uint32_t k = 0; k < 4; ++k) {
+            bus.write8(0x06000000 + 64 + r * 4 + k, b);
+        }
+    }
+    bus.write16(0x04000008, 0x0800);  // BG0CNT: char 0, screen 8, prio 0
+    for (uint32_t i = 0; i < 1024; ++i) {
+        bus.write16(0x06004000 + i * 2, 0x0001);  // map -> tile 1
+    }
+
+    auto frame = [&ppu] {
+        ppu.step(PPU::CYCLES_SCANLINE * PPU::LINES_TOTAL);
+        ppu.frameReady();
+    };
+    const auto& fb = ppu.framebuffer();
+    auto at = [&fb](int x, int y) { return fb[y * 240 + x]; };
+    const uint32_t RED = 0xFF0000FF, GREEN = 0x00FF00FF, BLUE = 0x0000FFFF;
+
+    // No mosaic: columns render distinctly red/green/blue.
+    bus.write16(0x0400004C, 0x0000);  // MOSAIC: none
+    bus.write16(0x04000000, 0x0100);  // mode 0, BG0
+    frame();
+    CHECK(at(0, 0) == RED && at(1, 0) == GREEN && at(2, 0) == BLUE,
+          "no mosaic: distinct columns (got 0x%08X 0x%08X 0x%08X)",
+          at(0, 0), at(1, 0), at(2, 0));
+
+    // BG H mosaic, 2-pixel blocks: each pair samples the left column.
+    bus.write16(0x0400004C, 0x0001);  // MOSAIC: BG H block = 2
+    bus.write16(0x04000008, 0x0840);  // BG0CNT mosaic bit set
+    frame();
+    CHECK(at(0, 0) == RED && at(1, 0) == RED,
+          "BG H mosaic: pixels 0,1 both red (got 0x%08X 0x%08X)", at(0, 0),
+          at(1, 0));
+    CHECK(at(2, 0) == BLUE && at(3, 0) == BLUE,
+          "BG H mosaic: pixels 2,3 both blue (got 0x%08X 0x%08X)", at(2, 0),
+          at(3, 0));
+
+    // Gate: same MOSAIC value but the BGxCNT bit clear -> no mosaic.
+    bus.write16(0x04000008, 0x0800);  // BG0CNT mosaic bit clear
+    frame();
+    CHECK(at(1, 0) == GREEN, "BGxCNT gate: bit clear disables mosaic (got "
+          "0x%08X)", at(1, 0));
+
+    // BG V mosaic, 2-pixel blocks, per-row tile: rows 0,1 share row 0.
+    for (uint32_t i = 0; i < 1024; ++i) {
+        bus.write16(0x06004000 + i * 2, 0x0002);  // map -> tile 2
+    }
+    bus.write16(0x0400004C, 0x0010);  // MOSAIC: BG V block = 2
+    bus.write16(0x04000008, 0x0840);  // BG0CNT mosaic bit set
+    frame();
+    CHECK(at(0, 0) == RED && at(0, 1) == RED,
+          "BG V mosaic: lines 0,1 both row-0 red (got 0x%08X 0x%08X)",
+          at(0, 0), at(0, 1));
+    CHECK(at(0, 2) == BLUE,
+          "BG V mosaic: line 2 samples row 2 blue (got 0x%08X)", at(0, 2));
+
+    // OBJ mosaic relative to sprite origin: sprite at odd x=5, H block 2.
+    // Screen 5,6 are sprite columns 0,1 -> same block -> both red, proving
+    // the grid resets at the sprite, not the screen.
+    bus.write16(0x07000000, 0x1000);  // attr0: y=0, mosaic bit
+    bus.write16(0x07000002, 0x0005);  // attr1: x=5, 8x8
+    bus.write16(0x07000004, 0x0001);  // attr2: tile 1, priority 0
+    bus.write16(0x0400004C, 0x0100);  // MOSAIC: OBJ H block = 2
+    bus.write16(0x04000000, 0x1040);  // mode 0, OBJ on, 1D map, BG off
+    frame();
+    CHECK(at(5, 0) == RED && at(6, 0) == RED,
+          "OBJ mosaic: screen 5,6 same sprite block, red (got 0x%08X "
+          "0x%08X)", at(5, 0), at(6, 0));
+    CHECK(at(7, 0) == BLUE,
+          "OBJ mosaic: screen 7 is sprite column 2, blue (got 0x%08X)",
+          at(7, 0));
+}
+
 // SRAM writes land in the save buffer and survive a save/load round trip.
 void testSRAMPersistence(Bus& bus) {
     std::printf("Test: SRAM persistence\n");
@@ -1545,6 +1648,10 @@ int main() {
     {
         Bus bus;
         testBlending(bus);
+    }
+    {
+        Bus bus;
+        testMosaic(bus);
     }
     {
         Bus bus;

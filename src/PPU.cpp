@@ -20,6 +20,7 @@ constexpr uint32_t REG_WIN1H    = 0x04000042;
 constexpr uint32_t REG_WIN1V    = 0x04000046;
 constexpr uint32_t REG_WININ    = 0x04000048;
 constexpr uint32_t REG_WINOUT   = 0x0400004A;
+constexpr uint32_t REG_MOSAIC   = 0x0400004C;
 constexpr uint32_t REG_BLDCNT   = 0x04000050;
 constexpr uint32_t REG_BLDALPHA = 0x04000052;
 constexpr uint32_t REG_BLDY     = 0x04000054;
@@ -312,11 +313,19 @@ void PPU::renderBackgroundLine(int bg, int line, uint16_t* out) {
     const int hofs = bus.read16(hofsAddr) & 0x1FF;
     const int vofs = bus.read16(hofsAddr + 2) & 0x1FF;
 
-    const int vy = (line + vofs) & (heightTiles * 8 - 1);
+    // Mosaic (BGxCNT bit 6) quantizes the screen coordinate down to the
+    // block grid so every pixel in a block samples the block's top-left.
+    const uint16_t mosaic = bus.read16(REG_MOSAIC);
+    const int mosW = (cnt & 0x40) ? (mosaic & 0xF) + 1 : 1;
+    const int mosH = (cnt & 0x40) ? ((mosaic >> 4) & 0xF) + 1 : 1;
+
+    const int effLine = (line / mosH) * mosH;
+    const int vy = (effLine + vofs) & (heightTiles * 8 - 1);
     const int tileY = vy >> 3;
 
     for (int x = 0; x < SCREEN_WIDTH; ++x) {
-        const int vx = (x + hofs) & (widthTiles * 8 - 1);
+        const int effX = (x / mosW) * mosW;
+        const int vx = (effX + hofs) & (widthTiles * 8 - 1);
         const int tileX = vx >> 3;
 
         // Screenblock layout: 64-wide and/or 64-tall maps are built from
@@ -552,19 +561,28 @@ void PPU::renderSpritesLine(int line, uint16_t* objColor, uint8_t* objPrio,
             pd = static_cast<int16_t>(bus.read16(group + 30));
         }
 
+        // OBJ mosaic (attr0 bit 12) quantizes the sprite-local coordinate
+        // into blocks; the grid resets at the sprite's own top-left corner.
+        const bool mosaicObj = attr0 & 0x1000;
+        const uint16_t mosaic = bus.read16(REG_MOSAIC);
+        const int mosW = mosaicObj ? ((mosaic >> 8) & 0xF) + 1 : 1;
+        const int mosH = mosaicObj ? ((mosaic >> 12) & 0xF) + 1 : 1;
+        const int mrow = (row / mosH) * mosH;
+
         for (int i = 0; i < boxW; ++i) {
             const int sx = x0 + i;
             if (sx < 0 || sx >= SCREEN_WIDTH) {
                 continue;
             }
+            const int mi = (i / mosW) * mosW;
             int col;
             int texRow;
             if (affine) {
                 // Inverse transform: map the offset from the box center
                 // back into texture space around the sprite's center; a
                 // sample outside the texture is transparent.
-                const int dx = i - boxW / 2;
-                const int dy = row - boxH / 2;
+                const int dx = mi - boxW / 2;
+                const int dy = mrow - boxH / 2;
                 col = ((pa * dx + pb * dy) >> 8) + width / 2;
                 texRow = ((pc * dx + pd * dy) >> 8) + height / 2;
                 if (col < 0 || col >= width || texRow < 0 ||
@@ -572,8 +590,8 @@ void PPU::renderSpritesLine(int line, uint16_t* objColor, uint8_t* objPrio,
                     continue;
                 }
             } else {
-                col = hflip ? (width - 1 - i) : i;
-                texRow = row;
+                col = hflip ? (width - 1 - mi) : mi;
+                texRow = mrow;
             }
             const uint32_t tileX = static_cast<uint32_t>(col >> 3);
             const uint32_t tileY = static_cast<uint32_t>(texRow >> 3);
