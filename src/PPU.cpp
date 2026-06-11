@@ -316,11 +316,10 @@ void PPU::renderSpritesLine(int line, uint32_t* colors,
         const uint16_t attr1 = bus.read16(entry + 2);
         const uint16_t attr2 = bus.read16(entry + 4);
 
-        if (attr0 & 0x100) {
-            TRACE_LOG("affine sprite %d skipped", obj);
-            continue;
-        }
-        if (attr0 & 0x200) {
+        // attr0 bit 8 enables rotation/scaling; bit 9 doubles the scanned
+        // box in that case but means "disabled" for a regular sprite.
+        const bool affine = attr0 & 0x100;
+        if (!affine && (attr0 & 0x200)) {
             continue;  // disabled
         }
         const uint32_t shape = attr0 >> 14;
@@ -331,15 +330,21 @@ void PPU::renderSpritesLine(int line, uint32_t* colors,
         const int width = OBJ_WIDTH[shape][sizeIdx];
         const int height = OBJ_HEIGHT[shape][sizeIdx];
 
+        // A rotated image swings outside its nominal box; double-size
+        // widens the scanned screen area so the corners aren't clipped.
+        const bool doubleSize = affine && (attr0 & 0x200);
+        const int boxW = doubleSize ? width * 2 : width;
+        const int boxH = doubleSize ? height * 2 : height;
+
         int y = attr0 & 0xFF;
         if (y >= SCREEN_HEIGHT) {
             y -= 256;  // wraps negative
         }
         int row = line - y;
-        if (row < 0 || row >= height) {
+        if (row < 0 || row >= boxH) {
             continue;
         }
-        if (attr1 & 0x2000) {
+        if (!affine && (attr1 & 0x2000)) {
             row = height - 1 - row;  // vertical flip
         }
 
@@ -352,10 +357,23 @@ void PPU::renderSpritesLine(int line, uint32_t* colors,
         const uint32_t baseTile = attr2 & 0x3FF;
         const int priority = (attr2 >> 10) & 3;
         const uint32_t palBank = attr2 >> 12;
-        const bool hflip = attr1 & 0x1000;
+        const bool hflip = !affine && (attr1 & 0x1000);
         const uint32_t tileStep = is8bpp ? 2 : 1;  // tile units of 32 bytes
 
-        for (int i = 0; i < width; ++i) {
+        // Rotation/scaling parameters: attr1 bits 9-13 pick one of the 32
+        // groups interleaved through OAM, each PA/PB/PC/PD value sitting
+        // in the fourth halfword of four consecutive entries. 8.8 signed
+        // fixed point, the same format as the BG matrices.
+        int32_t pa = 0x100, pb = 0, pc = 0, pd = 0x100;
+        if (affine) {
+            const uint32_t group = OAM_BASE + ((attr1 >> 9) & 0x1F) * 32;
+            pa = static_cast<int16_t>(bus.read16(group + 6));
+            pb = static_cast<int16_t>(bus.read16(group + 14));
+            pc = static_cast<int16_t>(bus.read16(group + 22));
+            pd = static_cast<int16_t>(bus.read16(group + 30));
+        }
+
+        for (int i = 0; i < boxW; ++i) {
             const int sx = x0 + i;
             if (sx < 0 || sx >= SCREEN_WIDTH) {
                 continue;
@@ -363,9 +381,26 @@ void PPU::renderSpritesLine(int line, uint32_t* colors,
             if (priority > priorities[sx]) {
                 continue;  // behind the background at this pixel
             }
-            const int col = hflip ? (width - 1 - i) : i;
+            int col;
+            int texRow;
+            if (affine) {
+                // Inverse transform: map the offset from the box center
+                // back into texture space around the sprite's center; a
+                // sample outside the texture is transparent.
+                const int dx = i - boxW / 2;
+                const int dy = row - boxH / 2;
+                col = ((pa * dx + pb * dy) >> 8) + width / 2;
+                texRow = ((pc * dx + pd * dy) >> 8) + height / 2;
+                if (col < 0 || col >= width || texRow < 0 ||
+                    texRow >= height) {
+                    continue;
+                }
+            } else {
+                col = hflip ? (width - 1 - i) : i;
+                texRow = row;
+            }
             const uint32_t tileX = static_cast<uint32_t>(col >> 3);
-            const uint32_t tileY = static_cast<uint32_t>(row >> 3);
+            const uint32_t tileY = static_cast<uint32_t>(texRow >> 3);
             const uint32_t rowStride =
                 map1D ? static_cast<uint32_t>(width / 8) * tileStep : 32;
             const uint32_t tileNum =
@@ -373,7 +408,7 @@ void PPU::renderSpritesLine(int line, uint32_t* colors,
             const uint32_t tileAddr = VRAM_OBJ_BASE + (tileNum & 0x3FF) * 32;
 
             const int px = col & 7;
-            const int py = row & 7;
+            const int py = texRow & 7;
             uint32_t colorIndex;
             if (is8bpp) {
                 colorIndex = bus.read8(

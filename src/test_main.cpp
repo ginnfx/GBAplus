@@ -415,6 +415,114 @@ void testAffineBackground(Bus& bus) {
           fb[0]);
 }
 
+// Affine sprites: OAM parameter groups, the attr0 bit-8/bit-9 decode,
+// the double-size bounding box, and the inverse per-pixel transform.
+void testAffineSprites(Bus& bus) {
+    std::printf("Test: affine sprites\n");
+    PPU ppu(bus);
+
+    bus.write16(0x04000000, 0x1040);  // DISPCNT: mode 0, OBJ on, 1D map
+    bus.write16(0x05000000, 0x7C00);  // backdrop blue
+    bus.write16(0x05000202, 0x001F);  // OBJ palette 1: red
+    bus.write16(0x05000204, 0x03E0);  // OBJ palette 2: green
+
+    // OBJ tile 2, 4bpp: texture column 0 is color 1 (red), columns 1-7
+    // color 2 (green) — asymmetric so transforms are distinguishable.
+    for (uint32_t r = 0; r < 8; ++r) {
+        bus.write8(0x06010000 + 2 * 32 + r * 4, 0x21);
+        bus.write8(0x06010000 + 2 * 32 + r * 4 + 1, 0x22);
+        bus.write8(0x06010000 + 2 * 32 + r * 4 + 2, 0x22);
+        bus.write8(0x06010000 + 2 * 32 + r * 4 + 3, 0x22);
+    }
+
+    // Sprite 0: regular 8x8 at (0,0), tile 2.
+    bus.write16(0x07000000, 0x0000);
+    bus.write16(0x07000002, 0x0000);
+    bus.write16(0x07000004, 0x0002);
+
+    auto frame = [&ppu] {
+        ppu.step(PPU::CYCLES_SCANLINE * PPU::LINES_TOTAL);
+        ppu.frameReady();
+    };
+    const auto& fb = ppu.framebuffer();
+
+    // Snapshot the regular sprite, then re-render it as an affine sprite
+    // with an identity matrix: the two must be pixel-identical.
+    frame();
+    uint32_t plain[8][10];
+    for (int r = 0; r < 8; ++r) {
+        for (int c = 0; c < 10; ++c) {
+            plain[r][c] = fb[r * 240 + c];
+        }
+    }
+    CHECK(plain[0][0] == 0xFF0000FF && plain[0][1] == 0x00FF00FF,
+          "regular sprite drawn (got 0x%08X, 0x%08X)", plain[0][0],
+          plain[0][1]);
+
+    bus.write16(0x07000000, 0x0100);  // affine, group 0
+    bus.write16(0x07000006, 0x0100);  // PA = 1.0
+    bus.write16(0x0700000E, 0x0000);  // PB
+    bus.write16(0x07000016, 0x0000);  // PC
+    bus.write16(0x0700001E, 0x0100);  // PD = 1.0
+    frame();
+    int mismatches = 0;
+    for (int r = 0; r < 8; ++r) {
+        for (int c = 0; c < 10; ++c) {
+            if (fb[r * 240 + c] != plain[r][c]) {
+                ++mismatches;
+            }
+        }
+    }
+    CHECK(mismatches == 0,
+          "identity affine matches regular twin (%d mismatches)",
+          mismatches);
+
+    // 90-degree rotation: screen (x,y) samples texture (y, 8-x), so the
+    // red texture column lands on screen line 0 and the sample at x=0
+    // falls off the texture edge.
+    bus.write16(0x07000006, 0x0000);  // PA
+    bus.write16(0x0700000E, 0x0100);  // PB
+    bus.write16(0x07000016, 0xFF00);  // PC = -1.0
+    bus.write16(0x0700001E, 0x0000);  // PD
+    frame();
+    CHECK(fb[1] == 0xFF0000FF, "rotate: (1,0) red (got 0x%08X)", fb[1]);
+    CHECK(fb[7] == 0xFF0000FF, "rotate: (7,0) red (got 0x%08X)", fb[7]);
+    CHECK(fb[240 + 1] == 0x00FF00FF, "rotate: (1,1) green (got 0x%08X)",
+          fb[240 + 1]);
+    CHECK(fb[0] == 0x0000FFFF,
+          "rotate: (0,0) off the texture edge (got 0x%08X)", fb[0]);
+
+    // 2x magnification (PA/PD = 0.5) with double-size: the 16x16 box
+    // shows the whole texture, red column included, from screen x 0.
+    bus.write16(0x07000000, 0x0300);  // affine + double-size
+    bus.write16(0x07000006, 0x0080);  // PA = 0.5
+    bus.write16(0x0700000E, 0x0000);
+    bus.write16(0x07000016, 0x0000);
+    bus.write16(0x0700001E, 0x0080);  // PD = 0.5
+    frame();
+    CHECK(fb[0] == 0xFF0000FF && fb[1] == 0xFF0000FF,
+          "double-size 2x: red column doubled at x 0-1 (got 0x%08X, 0x%08X)",
+          fb[0], fb[1]);
+    CHECK(fb[15] == 0x00FF00FF, "double-size 2x: (15,0) green (got 0x%08X)",
+          fb[15]);
+    CHECK(fb[16] == 0x0000FFFF, "double-size 2x: (16,0) backdrop (got "
+          "0x%08X)", fb[16]);
+
+    // Same scale without double-size: the 8x8 box clips to the texture
+    // center, so the red edge column is no longer visible.
+    bus.write16(0x07000000, 0x0100);
+    frame();
+    CHECK(fb[0] == 0x00FF00FF,
+          "no double-size: edge clipped, (0,0) green (got 0x%08X)", fb[0]);
+
+    // attr0 bit 9 without bit 8 means disabled, not double-size.
+    bus.write16(0x07000000, 0x0200);
+    frame();
+    CHECK(fb[0] == 0x0000FFFF && fb[240 + 1] == 0x0000FFFF,
+          "bit 9 alone disables the sprite (got 0x%08X, 0x%08X)", fb[0],
+          fb[240 + 1]);
+}
+
 // SRAM writes land in the save buffer and survive a save/load round trip.
 void testSRAMPersistence(Bus& bus) {
     std::printf("Test: SRAM persistence\n");
@@ -1201,6 +1309,10 @@ int main() {
     {
         Bus bus;
         testAffineBackground(bus);
+    }
+    {
+        Bus bus;
+        testAffineSprites(bus);
     }
     {
         Bus bus;

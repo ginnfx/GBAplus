@@ -151,6 +151,8 @@ private:
     void swiArcTan2();
     void swiCpuSet();
     void swiCpuFastSet();
+    void swiBgAffineSet();
+    void swiObjAffineSet();
     void swiBitUnPack();
     void swiLZ77UnComp();
     void swiHuffUnComp();
