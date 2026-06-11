@@ -47,7 +47,7 @@ cmake -B build
 cmake --build build
 ```
 
-### Linux (Debian/Ubuntu)
+### Linux (Debian/Ubuntu/change pkg manager accordingly)
 
 ```sh
 sudo apt install cmake g++ libsdl2-dev
@@ -106,6 +106,9 @@ making it suitable for CI.
 For accuracy work, `--trace` writes `emu_trace.log` and
 `compare_logs.py` diffs it against a trace from a reference emulator such
 as mGBA.
+
+## Current state
+Most games unlikely to boot. However some appear to work if given time/skipping logos (AOS)
 
 ## Accuracy notes
  Instruction timing is currently approximated (a flat cost per instruction rather than true
