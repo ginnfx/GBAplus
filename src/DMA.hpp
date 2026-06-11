@@ -13,6 +13,8 @@ public:
     void onVBlank();
     void onHBlank();
 
+    void onFifoRequest(int fifo);
+
 private:
     static constexpr uint16_t CTRL_REPEAT  = 1u << 9;
     static constexpr uint16_t CTRL_WORD32  = 1u << 10;

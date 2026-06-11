@@ -3,11 +3,14 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <vector>
 
+#include "APU.hpp"
 #include "ARM7TDMI.hpp"
 #include "Bus.hpp"
 #include "DMA.hpp"
 #include "PPU.hpp"
+#include "Timers.hpp"
 
 namespace {
 
@@ -74,6 +77,10 @@ int runEmulator(const Options& opts) {
     PPU ppu(bus);
     DMA dma(bus);
     bus.attachDMA(&dma);
+    Timers timers(bus);
+    bus.attachTimers(&timers);
+    APU apu(bus);
+    bus.attachAPU(&apu);
 
     if (!opts.biosPath.empty()) {
         if (bus.loadBIOS(opts.biosPath)) {
@@ -127,7 +134,7 @@ int runEmulator(const Options& opts) {
         }
     }
 
-    if (SDL_Init(SDL_INIT_VIDEO) != 0) {
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) != 0) {
         std::fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
         return 1;
     }
@@ -144,6 +151,20 @@ int runEmulator(const Options& opts) {
         SDL_Quit();
         return 1;
     }
+
+    SDL_AudioSpec audioWant{};
+    audioWant.freq = APU::SAMPLE_RATE;
+    audioWant.format = AUDIO_S16SYS;
+    audioWant.channels = 2;
+    audioWant.samples = 1024;
+    const SDL_AudioDeviceID audioDev =
+        SDL_OpenAudioDevice(nullptr, 0, &audioWant, nullptr, 0);
+    if (audioDev != 0) {
+        SDL_PauseAudioDevice(audioDev, 0);
+    } else {
+        std::fprintf(stderr, "No audio device: %s\n", SDL_GetError());
+    }
+    std::vector<int16_t> audioChunk;
 
     uint16_t keyState = KEY_ALL_RELEASED;
     bus.writeIODirect16(REG_KEYINPUT, keyState);
@@ -181,6 +202,19 @@ int runEmulator(const Options& opts) {
         for (int c = 0; c < CYCLES_PER_FRAME; c += APPROX_CYCLES_PER_INSTR) {
             cpu.step();
             ppu.step(APPROX_CYCLES_PER_INSTR);
+            timers.step(APPROX_CYCLES_PER_INSTR);
+            apu.step(APPROX_CYCLES_PER_INSTR);
+        }
+
+        if (audioDev != 0 && apu.pendingFrames() > 0) {
+            audioChunk.resize(apu.pendingFrames() * 2);
+            const size_t frames =
+                apu.drainSamples(audioChunk.data(), apu.pendingFrames());
+            if (SDL_GetQueuedAudioSize(audioDev) < 16384) {
+                SDL_QueueAudio(audioDev, audioChunk.data(),
+                               static_cast<Uint32>(frames * 2 *
+                                                   sizeof(int16_t)));
+            }
         }
 
         if (ppu.frameReady()) {
@@ -210,6 +244,9 @@ int runEmulator(const Options& opts) {
         std::fclose(traceFile);
     }
 
+    if (audioDev != 0) {
+        SDL_CloseAudioDevice(audioDev);
+    }
     SDL_DestroyTexture(texture);
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);

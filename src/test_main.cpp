@@ -1,10 +1,12 @@
 #include <cstdio>
 #include <string>
 
+#include "APU.hpp"
 #include "ARM7TDMI.hpp"
 #include "Bus.hpp"
 #include "DMA.hpp"
 #include "PPU.hpp"
+#include "Timers.hpp"
 
 namespace {
 
@@ -383,6 +385,200 @@ void testHLEInterruptDispatch(Bus& bus) {
           cpu.reg(15));
 }
 
+void testARMHalfwordTransfer(Bus& bus) {
+    std::printf("Test: ARM halfword/signed transfers\n");
+    ARM7TDMI cpu(bus);
+    cpu.reset();
+
+    const uint32_t base = 0x02000E00;
+    const uint32_t data = 0x02000F00;
+    cpu.setReg(0, data);
+    cpu.setReg(1, 0x1234BEEF);
+    bus.write32(base + 0x00, 0xE1C010B0);
+    bus.write32(base + 0x04, 0xE1D020B0);
+    bus.write32(base + 0x08, 0xE1D030D1);
+    bus.write32(base + 0x0C, 0xE1D040F0);
+    bus.write32(base + 0x10, 0xEAFFFFFE);
+    cpu.setReg(15, base);
+    for (int i = 0; i < 4; ++i) {
+        cpu.step();
+    }
+
+    CHECK(bus.read16(data) == 0xBEEF && bus.read16(data + 2) == 0,
+          "STRH stored only 16 bits (got 0x%04X, 0x%04X)", bus.read16(data),
+          bus.read16(data + 2));
+    CHECK(cpu.reg(2) == 0xBEEF, "LDRH zero-extended (got 0x%08X)",
+          cpu.reg(2));
+    CHECK(cpu.reg(3) == 0xFFFFFFBE, "LDRSB sign-extended (got 0x%08X)",
+          cpu.reg(3));
+    CHECK(cpu.reg(4) == 0xFFFFBEEF, "LDRSH sign-extended (got 0x%08X)",
+          cpu.reg(4));
+}
+
+void testARMMultiply(Bus& bus) {
+    std::printf("Test: ARM multiply\n");
+    ARM7TDMI cpu(bus);
+    cpu.reset();
+
+    const uint32_t base = 0x02001100;
+    cpu.setReg(0, 7);
+    cpu.setReg(1, 6);
+    cpu.setReg(8, 0x80000000);
+    cpu.setReg(9, 4);
+    cpu.setReg(10, 0xFFFFFFFE);
+    cpu.setReg(11, 3);
+    bus.write32(base + 0x00, 0xE0020190);
+    bus.write32(base + 0x04, 0xE0232190);
+    bus.write32(base + 0x08, 0xE0854998);
+    bus.write32(base + 0x0C, 0xE0D76B9A);
+    bus.write32(base + 0x10, 0xEAFFFFFE);
+    cpu.setReg(15, base);
+    for (int i = 0; i < 4; ++i) {
+        cpu.step();
+    }
+
+    CHECK(cpu.reg(2) == 42, "MUL: 7*6 == 42 (got %u)", cpu.reg(2));
+    CHECK(cpu.reg(3) == 84, "MLA: 7*6+42 == 84 (got %u)", cpu.reg(3));
+    CHECK(cpu.reg(4) == 0 && cpu.reg(5) == 2,
+          "UMULL: 0x80000000*4 == 2:0 (got %u:%u)", cpu.reg(5), cpu.reg(4));
+    CHECK(cpu.reg(6) == 0xFFFFFFFA && cpu.reg(7) == 0xFFFFFFFF,
+          "SMULL: -2*3 == -6 (got 0x%08X:0x%08X)", cpu.reg(7), cpu.reg(6));
+    CHECK(cpu.getCPSR() & ARM7TDMI::FLAG_N,
+          "SMULLS set N for negative result (CPSR=0x%08X)", cpu.getCPSR());
+}
+
+void testPSRTransfer(Bus& bus) {
+    std::printf("Test: MRS/MSR\n");
+    ARM7TDMI cpu(bus);
+    cpu.reset();
+
+    const uint32_t base = 0x02001200;
+    bus.write32(base + 0x00, 0xE3A0020F);
+    bus.write32(base + 0x04, 0xE128F000);
+    bus.write32(base + 0x08, 0xE10F1000);
+    bus.write32(base + 0x0C, 0xE3A0203F);
+    bus.write32(base + 0x10, 0xE121F002);
+    bus.write32(base + 0x14, 0xE10F3000);
+    bus.write32(base + 0x18, 0xEAFFFFFE);
+    cpu.setReg(15, base);
+    for (int i = 0; i < 6; ++i) {
+        cpu.step();
+    }
+
+    CHECK((cpu.reg(1) & 0xF0000000) == 0xF0000000,
+          "MSR flags field landed in CPSR (MRS got 0x%08X)", cpu.reg(1));
+    CHECK((cpu.reg(3) & 0x20) == 0,
+          "T bit rejected by MSR control write (got 0x%08X)", cpu.reg(3));
+    CHECK((cpu.reg(3) & 0x1F) == 0x1F,
+          "mode bits written through control field (got 0x%02X)",
+          cpu.reg(3) & 0x1F);
+    CHECK(!cpu.inThumbState(), "CPU still executing ARM after MSR");
+}
+
+void testTimers(Bus& bus) {
+    std::printf("Test: hardware timers\n");
+    Timers timers(bus);
+    bus.attachTimers(&timers);
+
+    bus.write16(0x04000100, 0xFFF0);
+    bus.write16(0x04000102, 0x00C1);
+    CHECK(bus.read16(0x04000100) == 0xFFF0,
+          "counter loaded from reload on enable (got 0x%04X)",
+          bus.read16(0x04000100));
+
+    timers.step(64);
+    CHECK(bus.read16(0x04000100) == 0xFFF1,
+          "prescaler 64: one tick after 64 cycles (got 0x%04X)",
+          bus.read16(0x04000100));
+
+    bus.write16(0x04000104, 0x0000);
+    bus.write16(0x04000106, 0x0084);
+
+    timers.step(15 * 64);
+    CHECK(bus.read16(0x04000100) == 0xFFF0,
+          "timer 0 reloaded on overflow (got 0x%04X)",
+          bus.read16(0x04000100));
+    CHECK(bus.read16(0x04000104) == 1,
+          "timer 1 cascaded on timer 0 overflow (got %u)",
+          bus.read16(0x04000104));
+    CHECK(bus.read16(0x04000202) & (1u << 3),
+          "timer 0 IRQ raised in IF (IF=0x%04X)", bus.read16(0x04000202));
+}
+
+void testAPUSquare(Bus& bus) {
+    std::printf("Test: APU square channel\n");
+    APU apu(bus);
+    bus.attachAPU(&apu);
+
+    bus.write16(0x04000084, 0x0080);
+    bus.write16(0x04000080, 0xFF77);
+    bus.write16(0x04000082, 0x0002);
+    bus.write16(0x04000062, 0xF080);
+    bus.write16(0x04000064, 0x8400);
+
+    CHECK(bus.read16(0x04000084) & 1,
+          "square 1 active flag in SOUNDCNT_X (got 0x%04X)",
+          bus.read16(0x04000084));
+
+    apu.step(APU::CYCLES_PER_SAMPLE * 64);
+    CHECK(apu.pendingFrames() >= 64, "64 frames generated (got %zu)",
+          apu.pendingFrames());
+    int16_t frames[128];
+    apu.drainSamples(frames, 64);
+    bool nonzero = false;
+    for (int i = 0; i < 128; ++i) {
+        nonzero = nonzero || frames[i] != 0;
+    }
+    CHECK(nonzero, "square wave produced non-silent samples");
+
+    bus.write16(0x04000062, 0xF0BF);
+    bus.write16(0x04000064, 0xC400);
+    apu.step(131072);
+    CHECK((bus.read16(0x04000084) & 1) == 0,
+          "length expiry cleared the active flag (got 0x%04X)",
+          bus.read16(0x04000084));
+}
+
+void testAPUFifoDMA(Bus& bus) {
+    std::printf("Test: APU Direct Sound FIFO + DMA refill\n");
+    APU apu(bus);
+    bus.attachAPU(&apu);
+    DMA dma(bus);
+    bus.attachDMA(&dma);
+    Timers timers(bus);
+    bus.attachTimers(&timers);
+
+    bus.write16(0x04000084, 0x0080);
+    bus.write16(0x04000082, 0x0304);
+
+    for (int i = 0; i < 8; ++i) {
+        bus.write32(0x040000A0, 0x40404040);
+    }
+    CHECK(apu.fifoCount(0) == 32, "FIFO A filled by CPU writes (count=%d)",
+          apu.fifoCount(0));
+
+    const uint32_t src = 0x02001300;
+    for (uint32_t i = 0; i < 16; ++i) {
+        bus.write8(src + i, 0x55);
+    }
+    bus.write32(0x040000BC, src);
+    bus.write32(0x040000C0, 0x040000A0);
+    bus.write16(0x040000C6, 0xB640);
+
+    bus.write16(0x04000100, 0xFFFF);
+    bus.write16(0x04000102, 0x0080);
+    timers.step(17);
+    CHECK(apu.fifoCount(0) == 31,
+          "DMA1 refilled FIFO A at half-empty (count=%d)", apu.fifoCount(0));
+
+    apu.step(APU::CYCLES_PER_SAMPLE);
+    int16_t frame[2] = {0, 0};
+    apu.drainSamples(frame, 1);
+    CHECK(frame[0] != 0 && frame[1] != 0,
+          "FIFO sample reached both output channels (got %d, %d)", frame[0],
+          frame[1]);
+}
+
 }
 
 int main() {
@@ -437,6 +633,30 @@ int main() {
     {
         Bus bus;
         testHLEInterruptDispatch(bus);
+    }
+    {
+        Bus bus;
+        testARMHalfwordTransfer(bus);
+    }
+    {
+        Bus bus;
+        testARMMultiply(bus);
+    }
+    {
+        Bus bus;
+        testPSRTransfer(bus);
+    }
+    {
+        Bus bus;
+        testTimers(bus);
+    }
+    {
+        Bus bus;
+        testAPUSquare(bus);
+    }
+    {
+        Bus bus;
+        testAPUFifoDMA(bus);
     }
 
     if (failures == 0) {

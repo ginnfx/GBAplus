@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+class APU;
 class DMA;
 class Timers;
 
@@ -41,8 +42,12 @@ public:
 
     void attachDMA(DMA* controller) { dma = controller; }
     void attachTimers(Timers* controller) { timers = controller; }
+    void attachAPU(APU* unit) { apu = unit; }
     void notifyVBlank();
     void notifyHBlank();
+
+    void notifyTimerOverflow(int timer);
+    void requestFifoDMA(int fifo);
 
     void requestInterrupt(uint16_t mask);
 
@@ -69,6 +74,7 @@ private:
 
     DMA* dma = nullptr;
     Timers* timers = nullptr;
+    APU* apu = nullptr;
     bool sramWritten = false;
     bool biosLoaded = false;
 

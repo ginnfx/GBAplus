@@ -19,6 +19,8 @@ add_library(gba_core STATIC
     src/ARM7TDMI.cpp
     src/PPU.cpp
     src/DMA.cpp
+    src/Timers.cpp
+    src/APU.cpp
 )
 target_include_directories(gba_core PUBLIC src)
 if(ENABLE_TRACE_LOG)
