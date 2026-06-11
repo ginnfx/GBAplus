@@ -4,7 +4,7 @@ A WIP Game Boy Advance emulator written in C++ with SDL2.
 
 GBAplus emulates the ARM7TDMI CPU (both ARM and Thumb instruction sets), the
 tiled and bitmap PPU video modes, 4-channel DMA, hardware timers, and the
-full audio unit. a LOT of ts was done using documentation from GBATEK, ARM7TDMI Technical Reference Manual and mGBA. 
+full audio unit. a LOT of ts was done using documentation from GBATEK, ARM7TDMI Technical Reference Manual and mGBA. No GUI yet.
 
 ## Features
 
