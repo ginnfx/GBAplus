@@ -663,6 +663,86 @@ void testObjWindow(Bus& bus) {
           at(50, 50));
 }
 
+// Colour special effects: alpha blend, brightness up/down, the window
+// effects-enable gate, and semi-transparent sprites forcing alpha.
+void testBlending(Bus& bus) {
+    std::printf("Test: blending\n");
+    PPU ppu(bus);
+
+    bus.write16(0x04000008, 0x0800);  // BG0CNT: char 0, screen 8, prio 0
+    bus.write16(0x0400000A, 0x0901);  // BG1CNT: char 0, screen 9, prio 1
+    bus.write16(0x05000000, 0x0000);  // backdrop black
+    bus.write16(0x05000002, 0x001F);  // palette 1: red
+    bus.write16(0x05000004, 0x7C00);  // palette 2: blue
+    bus.write16(0x05000206, 0x7C00);  // OBJ palette 3: blue
+
+    for (uint32_t i = 0; i < 32; ++i) {
+        bus.write8(0x06000000 + 32 + i, 0x11);       // BG tile 1 -> color 1
+        bus.write8(0x06000000 + 64 + i, 0x22);       // BG tile 2 -> color 2
+        bus.write8(0x06010000 + 2 * 32 + i, 0x33);   // OBJ tile 2 -> color 3 (blue)
+    }
+    for (uint32_t i = 0; i < 1024; ++i) {
+        bus.write16(0x06004000 + i * 2, 0x0001);     // BG0 -> tile 1 (red)
+        bus.write16(0x06004800 + i * 2, 0x0002);     // BG1 -> tile 2 (blue)
+    }
+
+    auto frame = [&ppu] {
+        ppu.step(PPU::CYCLES_SCANLINE * PPU::LINES_TOTAL);
+        ppu.frameReady();
+    };
+    const auto& fb = ppu.framebuffer();
+
+    // Alpha: BG0 (red, 1st) over BG1 (blue, 2nd), EVA=EVB=8 -> average.
+    bus.write16(0x04000050, 0x0241);  // BLDCNT: alpha, 1st BG0, 2nd BG1
+    bus.write16(0x04000052, 0x0808);  // BLDALPHA: EVA=8, EVB=8
+    bus.write16(0x04000000, 0x0300);  // mode 0, BG0 + BG1
+    frame();
+    CHECK(fb[0] == 0x7B007BFF, "alpha (red*0.5 + blue*0.5) (got 0x%08X)",
+          fb[0]);
+
+    // Brightness increase: BG0 red toward white by EVY=8 -> pink.
+    bus.write16(0x04000050, 0x0081);  // BLDCNT: brighten, 1st BG0
+    bus.write16(0x04000054, 0x0008);  // BLDY: EVY=8
+    bus.write16(0x04000000, 0x0100);  // mode 0, BG0 only
+    frame();
+    CHECK(fb[0] == 0xFF7B7BFF, "brighten red toward white (got 0x%08X)",
+          fb[0]);
+
+    // Brightness decrease: BG0 red toward black by EVY=8.
+    bus.write16(0x04000050, 0x00C1);  // BLDCNT: darken, 1st BG0
+    frame();
+    CHECK(fb[0] == 0x840000FF, "darken red toward black (got 0x%08X)", fb[0]);
+
+    // Window effects gate: brighten only outside WIN0 (effects bit set
+    // there); inside WIN0 the effects bit is clear so red stays raw.
+    bus.write16(0x04000050, 0x0081);  // BLDCNT: brighten, 1st BG0
+    bus.write16(0x04000040, 0x0078);  // WIN0H: X1=0, X2=120
+    bus.write16(0x04000044, 0x00A0);  // WIN0V: full height
+    bus.write16(0x04000048, 0x0001);  // WININ: BG0 on, effects off inside
+    bus.write16(0x0400004A, 0x0021);  // WINOUT: BG0 on, effects on outside
+    bus.write16(0x04000000, 0x2100);  // mode 0, BG0, WIN0
+    frame();
+    CHECK(fb[10] == 0xFF0000FF, "inside WIN0: effects off, raw red (got "
+          "0x%08X)", fb[10]);
+    CHECK(fb[200] == 0xFF7B7BFF, "outside WIN0: effects on, brightened (got "
+          "0x%08X)", fb[200]);
+
+    // Semi-transparent sprite (OBJ mode 1) alpha-blends over BG0 even with
+    // BLDCNT effect mode set to none.
+    bus.write16(0x04000040, 0x0000);  // clear windows
+    bus.write16(0x04000044, 0x0000);
+    bus.write16(0x07000000, 0x0400);  // attr0: y=0, OBJ mode 1 (semi)
+    bus.write16(0x07000002, 0x0000);  // attr1: x=0, 8x8
+    bus.write16(0x07000004, 0x0002);  // attr2: tile 2, priority 0
+    bus.write16(0x04000050, 0x0100);  // BLDCNT: mode none, 2nd target BG0
+    bus.write16(0x04000052, 0x0808);  // EVA=8, EVB=8
+    bus.write16(0x0400000A, 0x0801);  // BG1 off-screen priority; keep BG0
+    bus.write16(0x04000000, 0x1100);  // mode 0, BG0, OBJ
+    frame();
+    CHECK(fb[0] == 0x7B007BFF,
+          "semi-transparent sprite alpha over BG0 (got 0x%08X)", fb[0]);
+}
+
 // SRAM writes land in the save buffer and survive a save/load round trip.
 void testSRAMPersistence(Bus& bus) {
     std::printf("Test: SRAM persistence\n");
@@ -1461,6 +1541,10 @@ int main() {
     {
         Bus bus;
         testObjWindow(bus);
+    }
+    {
+        Bus bus;
+        testBlending(bus);
     }
     {
         Bus bus;

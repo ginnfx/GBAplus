@@ -1,5 +1,7 @@
 #include "PPU.hpp"
 
+#include <algorithm>
+
 #include "Bus.hpp"
 #include "Log.hpp"
 
@@ -18,6 +20,9 @@ constexpr uint32_t REG_WIN1H    = 0x04000042;
 constexpr uint32_t REG_WIN1V    = 0x04000046;
 constexpr uint32_t REG_WININ    = 0x04000048;
 constexpr uint32_t REG_WINOUT   = 0x0400004A;
+constexpr uint32_t REG_BLDCNT   = 0x04000050;
+constexpr uint32_t REG_BLDALPHA = 0x04000052;
+constexpr uint32_t REG_BLDY     = 0x04000054;
 
 constexpr uint16_t DISPSTAT_VBLANK     = 1u << 0;
 constexpr uint16_t DISPSTAT_HBLANK     = 1u << 1;
@@ -47,6 +52,34 @@ constexpr int OBJ_HEIGHT[3][4] = {{8, 16, 32, 64},
                                   {16, 32, 32, 64}};
 
 constexpr int PRIORITY_BACKDROP = 4;
+
+// Per-layer line buffers store 15-bit BGR; bit 15 marks an empty pixel.
+constexpr uint16_t TRANSPARENT = 0x8000;
+
+// Colour special effects operate on the native 5-bit BGR channels with the
+// coefficients applied as n/16 and the result clamped to 0..31.
+uint16_t alphaBlend(uint16_t a, uint16_t b, int eva, int evb) {
+    int r = std::min(31, (((a) & 31) * eva + ((b) & 31) * evb) >> 4);
+    int g = std::min(31, (((a >> 5) & 31) * eva + ((b >> 5) & 31) * evb) >> 4);
+    int bl = std::min(31, (((a >> 10) & 31) * eva + ((b >> 10) & 31) * evb) >> 4);
+    return static_cast<uint16_t>(r | (g << 5) | (bl << 10));
+}
+
+uint16_t brighten(uint16_t a, int evy) {
+    int r = (a & 31), g = (a >> 5) & 31, b = (a >> 10) & 31;
+    r += ((31 - r) * evy) >> 4;
+    g += ((31 - g) * evy) >> 4;
+    b += ((31 - b) * evy) >> 4;
+    return static_cast<uint16_t>(r | (g << 5) | (b << 10));
+}
+
+uint16_t darken(uint16_t a, int evy) {
+    int r = (a & 31), g = (a >> 5) & 31, b = (a >> 10) & 31;
+    r -= (r * evy) >> 4;
+    g -= (g * evy) >> 4;
+    b -= (b * evy) >> 4;
+    return static_cast<uint16_t>(r | (g << 5) | (b << 10));
+}
 }  // namespace
 
 PPU::PPU(Bus& bus) : bus(bus) {}
@@ -135,9 +168,18 @@ void PPU::renderMode4(int line) {
     }
 
     if (dispcnt & DISPCNT_OBJ_ON) {
-        // Windowing in the bitmap modes is not modelled yet; sprites here
-        // draw unconditionally.
-        renderSpritesLine(line, colors, priorities, nullptr, nullptr);
+        // Windowing and blending in the bitmap modes are not modelled yet;
+        // a sprite simply replaces the bitmap where it is in front.
+        uint16_t objColor[SCREEN_WIDTH];
+        uint8_t objPrio[SCREEN_WIDTH];
+        uint8_t objSemi[SCREEN_WIDTH];
+        for (int x = 0; x < SCREEN_WIDTH; ++x) objColor[x] = TRANSPARENT;
+        renderSpritesLine(line, objColor, objPrio, objSemi, nullptr);
+        for (int x = 0; x < SCREEN_WIDTH; ++x) {
+            if (objColor[x] != TRANSPARENT && objPrio[x] <= priorities[x]) {
+                colors[x] = bgr555ToRGBA(objColor[x]);
+            }
+        }
     }
 
     for (int x = 0; x < SCREEN_WIDTH; ++x) {
@@ -150,14 +192,7 @@ void PPU::renderMode4(int line) {
 // its DISPCNT enable bit either way.
 void PPU::renderTiledLine(int line, unsigned textMask, unsigned affineMask) {
     const uint16_t dispcnt = bus.read16(REG_DISPCNT);
-
-    uint32_t colors[SCREEN_WIDTH];
-    int priorities[SCREEN_WIDTH];
-    const uint32_t backdrop = paletteColor(0);
-    for (int x = 0; x < SCREEN_WIDTH; ++x) {
-        colors[x] = backdrop;
-        priorities[x] = PRIORITY_BACKDROP;
-    }
+    const uint16_t backdrop = bus.read16(PALETTE_BG) & 0x7FFF;
 
     // OBJ-window coverage for this line: a pre-pass over the OBJ-window-mode
     // sprites, run before the mask is built since the mask's OBJ-window tier
@@ -174,39 +209,96 @@ void PPU::renderTiledLine(int line, unsigned textMask, unsigned affineMask) {
     const uint8_t* winMask =
         computeWindowMask(line, winMaskBuf, objWinBuf) ? winMaskBuf : nullptr;
 
-    // Draw lowest priority first so higher priorities overwrite. Within a
-    // priority level, higher BG numbers sit below lower ones.
-    for (int priority = 3; priority >= 0; --priority) {
-        for (int bg = 3; bg >= 0; --bg) {
-            if (!(dispcnt & (1u << (8 + bg)))) {
-                continue;
-            }
-            const uint16_t cnt =
-                bus.read16(REG_BG0CNT + static_cast<uint32_t>(bg) * 2);
-            if ((cnt & 3) != priority) {
-                continue;
-            }
-            if (affineMask & (1u << bg)) {
-                renderAffineLine(bg, priority, colors, priorities, winMask);
-            } else if (textMask & (1u << bg)) {
-                renderBackgroundLine(bg, line, priority, colors, priorities,
-                                     winMask);
-            }
+    // Render each enabled BG into its own 15-bit line buffer; the compositor
+    // below merges them so it can keep the top two layers for blending.
+    uint16_t bgLine[4][SCREEN_WIDTH];
+    bool bgOn[4] = {false, false, false, false};
+    int bgPrio[4] = {0, 0, 0, 0};
+    for (int bg = 0; bg < 4; ++bg) {
+        if (!(dispcnt & (1u << (8 + bg)))) {
+            continue;
         }
+        const uint16_t cnt =
+            bus.read16(REG_BG0CNT + static_cast<uint32_t>(bg) * 2);
+        if (affineMask & (1u << bg)) {
+            renderAffineLine(bg, bgLine[bg]);
+        } else if (textMask & (1u << bg)) {
+            renderBackgroundLine(bg, line, bgLine[bg]);
+        } else {
+            continue;  // BG not present in this video mode
+        }
+        bgOn[bg] = true;
+        bgPrio[bg] = cnt & 3;
     }
 
-    if (dispcnt & DISPCNT_OBJ_ON) {
-        renderSpritesLine(line, colors, priorities, winMask, nullptr);
+    uint16_t objColor[SCREEN_WIDTH];
+    uint8_t objPrio[SCREEN_WIDTH];
+    uint8_t objSemi[SCREEN_WIDTH];
+    const bool objOn = dispcnt & DISPCNT_OBJ_ON;
+    if (objOn) {
+        for (int x = 0; x < SCREEN_WIDTH; ++x) objColor[x] = TRANSPARENT;
+        renderSpritesLine(line, objColor, objPrio, objSemi, nullptr);
     }
+
+    const uint16_t bldcnt = bus.read16(REG_BLDCNT);
+    const int bldMode = (bldcnt >> 6) & 3;
+    const uint16_t bldalpha = bus.read16(REG_BLDALPHA);
+    const int eva = std::min(16, bldalpha & 0x1F);
+    const int evb = std::min(16, (bldalpha >> 8) & 0x1F);
+    const int evy = std::min(16, bus.read16(REG_BLDY) & 0x1F);
 
     for (int x = 0; x < SCREEN_WIDTH; ++x) {
-        fb[line * SCREEN_WIDTH + x] = colors[x];
+        // Find the front two contributing layers by a combined key of
+        // priority then layer order (OBJ ahead of any BG at equal priority,
+        // then BG0..BG3). The backdrop sits behind everything.
+        int k0 = PRIORITY_BACKDROP * 8 + 7, k1 = k0;
+        uint16_t c0 = backdrop, c1 = backdrop;
+        int l0 = 5, l1 = 5;  // 0-3 BG, 4 OBJ, 5 backdrop
+        bool semi0 = false;
+        auto consider = [&](uint16_t color, int prio, int layer, int rank,
+                            bool semi) {
+            const int key = prio * 8 + rank;
+            if (key < k0) {
+                k1 = k0; c1 = c0; l1 = l0;
+                k0 = key; c0 = color; l0 = layer; semi0 = semi;
+            } else if (key < k1) {
+                k1 = key; c1 = color; l1 = layer;
+            }
+        };
+        for (int bg = 0; bg < 4; ++bg) {
+            if (bgOn[bg] && bgLine[bg][x] != TRANSPARENT &&
+                (!winMask || (winMask[x] & (1u << bg)))) {
+                consider(bgLine[bg][x], bgPrio[bg], bg, bg + 1, false);
+            }
+        }
+        if (objOn && objColor[x] != TRANSPARENT &&
+            (!winMask || (winMask[x] & (1u << 4)))) {
+            consider(objColor[x], objPrio[x], 4, 0, objSemi[x]);
+        }
+
+        // Colour special effects, gated by the window effects-enable bit.
+        const bool effects = !winMask || (winMask[x] & 0x20);
+        const bool top1st = bldcnt & (1u << l0);
+        const bool sec2nd = bldcnt & (1u << (8 + l1));
+        uint16_t out;
+        if (effects && l0 == 4 && semi0) {
+            // A semi-transparent sprite alpha-blends regardless of the
+            // BLDCNT mode, but only over a valid second target.
+            out = sec2nd ? alphaBlend(c0, c1, eva, evb) : c0;
+        } else if (effects && bldMode == 1 && top1st && sec2nd) {
+            out = alphaBlend(c0, c1, eva, evb);
+        } else if (effects && bldMode == 2 && top1st) {
+            out = brighten(c0, evy);
+        } else if (effects && bldMode == 3 && top1st) {
+            out = darken(c0, evy);
+        } else {
+            out = c0;
+        }
+        fb[line * SCREEN_WIDTH + x] = bgr555ToRGBA(out);
     }
 }
 
-void PPU::renderBackgroundLine(int bg, int line, int priority,
-                               uint32_t* colors, int* priorities,
-                               const uint8_t* winMask) {
+void PPU::renderBackgroundLine(int bg, int line, uint16_t* out) {
     const uint16_t cnt =
         bus.read16(REG_BG0CNT + static_cast<uint32_t>(bg) * 2);
     const uint32_t charBase = VRAM_BASE + ((cnt >> 2) & 3) * 0x4000;
@@ -260,13 +352,10 @@ void PPU::renderBackgroundLine(int bg, int line, int priority,
             }
         }
         if (colorIndex == 0) {
-            continue;  // color 0 is transparent
+            out[x] = TRANSPARENT;  // color 0 is transparent
+            continue;
         }
-        if (winMask && !(winMask[x] & (1u << bg))) {
-            continue;  // this BG is disabled inside the active window region
-        }
-        colors[x] = paletteColor(colorIndex);
-        priorities[x] = priority;
+        out[x] = bus.read16(PALETTE_BG + colorIndex * 2) & 0x7FFF;
     }
 }
 
@@ -274,8 +363,7 @@ void PPU::renderBackgroundLine(int bg, int line, int priority,
 // the texture coordinate advances by the PA/PC matrix column per screen
 // pixel. Affine maps differ from text maps: one byte per entry, always
 // 8bpp tiles, and square sizes of 128/256/512/1024 pixels.
-void PPU::renderAffineLine(int bg, int priority, uint32_t* colors,
-                           int* priorities, const uint8_t* winMask) {
+void PPU::renderAffineLine(int bg, uint16_t* out) {
     const uint16_t cnt =
         bus.read16(REG_BG0CNT + static_cast<uint32_t>(bg) * 2);
     const uint32_t charBase = VRAM_BASE + ((cnt >> 2) & 3) * 0x4000;
@@ -292,6 +380,7 @@ void PPU::renderAffineLine(int bg, int priority, uint32_t* colors,
     int32_t cx = affineX[bg - 2];
     int32_t cy = affineY[bg - 2];
     for (int x = 0; x < SCREEN_WIDTH; ++x, cx += pa, cy += pc) {
+        out[x] = TRANSPARENT;
         int tx = cx >> 8;
         int ty = cy >> 8;
         if (wrap) {
@@ -309,11 +398,7 @@ void PPU::renderAffineLine(int bg, int priority, uint32_t* colors,
         if (colorIndex == 0) {
             continue;
         }
-        if (winMask && !(winMask[x] & (1u << bg))) {
-            continue;  // this BG is disabled inside the active window region
-        }
-        colors[x] = paletteColor(colorIndex);
-        priorities[x] = priority;
+        out[x] = bus.read16(PALETTE_BG + colorIndex * 2) & 0x7FFF;
     }
 }
 
@@ -391,9 +476,8 @@ bool PPU::computeWindowMask(int line, uint8_t* mask,
     return true;
 }
 
-void PPU::renderSpritesLine(int line, uint32_t* colors,
-                            const int* priorities, const uint8_t* winMask,
-                            uint8_t* objWin) {
+void PPU::renderSpritesLine(int line, uint16_t* objColor, uint8_t* objPrio,
+                            uint8_t* objSemi, uint8_t* objWin) {
     const bool map1D = bus.read16(REG_DISPCNT) & DISPCNT_OBJ_1D;
     const bool objWinPass = objWin != nullptr;
 
@@ -473,14 +557,6 @@ void PPU::renderSpritesLine(int line, uint32_t* colors,
             if (sx < 0 || sx >= SCREEN_WIDTH) {
                 continue;
             }
-            if (!objWinPass) {
-                if (winMask && !(winMask[sx] & (1u << 4))) {
-                    continue;  // OBJ disabled in the active window region
-                }
-                if (priority > priorities[sx]) {
-                    continue;  // behind the background at this pixel
-                }
-            }
             int col;
             int texRow;
             if (affine) {
@@ -528,7 +604,12 @@ void PPU::renderSpritesLine(int line, uint32_t* colors,
                 objWin[sx] = 1;  // opaque OBJ-window texel marks the region
                 continue;
             }
-            colors[sx] = objPaletteColor(colorIndex);
+            // Lower OAM indices are drawn last and win overlaps. Record the
+            // winning sprite's colour, priority, and semi-transparent flag.
+            objColor[sx] =
+                bus.read16(PALETTE_OBJ + colorIndex * 2) & 0x7FFF;
+            objPrio[sx] = static_cast<uint8_t>(priority);
+            objSemi[sx] = objMode == 1;
         }
     }
 }

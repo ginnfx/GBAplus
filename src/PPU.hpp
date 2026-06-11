@@ -44,11 +44,10 @@ private:
     // Shared compositor for the tiled modes: text and affine layers are
     // drawn priority-ordered into the line buffers, then sprites.
     void renderTiledLine(int line, unsigned textMask, unsigned affineMask);
-    void renderBackgroundLine(int bg, int line, int priority,
-                              uint32_t* colors, int* priorities,
-                              const uint8_t* winMask);
-    void renderAffineLine(int bg, int priority, uint32_t* colors,
-                          int* priorities, const uint8_t* winMask);
+    // Each fills a per-layer line buffer with 15-bit BGR colours, using
+    // 0x8000 to mark transparent pixels; the compositor merges them.
+    void renderBackgroundLine(int bg, int line, uint16_t* out);
+    void renderAffineLine(int bg, uint16_t* out);
 
     // Per-pixel layer-enable mask from the window registers: returns false
     // when no window is enabled (every layer draws everywhere), otherwise
@@ -66,11 +65,12 @@ private:
     void advanceAffineReferences();
     // When objWin is non-null this runs as the OBJ-window pre-pass: only
     // OBJ-window-mode sprites are scanned and their opaque pixels set
-    // objWin[x] instead of drawing. Otherwise it is the normal visible
-    // pass, which skips OBJ-window-mode sprites.
-    void renderSpritesLine(int line, uint32_t* colors,
-                           const int* priorities, const uint8_t* winMask,
-                           uint8_t* objWin);
+    // objWin[x] instead of drawing. Otherwise it is the visible pass, which
+    // resolves the winning sprite per pixel into objColor (15-bit, 0x8000
+    // transparent), its priority into objPrio, and a semi-transparent
+    // (OBJ mode 1) flag into objSemi; it skips OBJ-window-mode sprites.
+    void renderSpritesLine(int line, uint16_t* objColor, uint8_t* objPrio,
+                           uint8_t* objSemi, uint8_t* objWin);
 
     uint32_t paletteColor(uint32_t index) const;     // BG palette
     uint32_t objPaletteColor(uint32_t index) const;  // sprite palette
