@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+class APU;
 class DMA;
 class Timers;
 
@@ -67,8 +68,15 @@ public:
     // control registers or when the PPU reaches HBlank/VBlank.
     void attachDMA(DMA* controller) { dma = controller; }
     void attachTimers(Timers* controller) { timers = controller; }
+    void attachAPU(APU* unit) { apu = unit; }
     void notifyVBlank();
     void notifyHBlank();
+
+    // Timer overflows clock the APU's Direct Sound FIFOs; a half-empty
+    // FIFO asks the DMA controller for a refill. Both hops go through the
+    // Bus so the Timers/APU/DMA classes never reference each other.
+    void notifyTimerOverflow(int timer);
+    void requestFifoDMA(int fifo);
 
     // Sets bits in REG_IF. Used by hardware (PPU, DMA, ...) to raise IRQs;
     // CPU-side writes to REG_IF go through write8/16 and acknowledge
@@ -98,6 +106,7 @@ private:
 
     DMA* dma = nullptr;
     Timers* timers = nullptr;
+    APU* apu = nullptr;
     bool sramWritten = false;
     bool biosLoaded = false;
 

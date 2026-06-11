@@ -2,6 +2,7 @@
 
 #include <fstream>
 
+#include "APU.hpp"
 #include "DMA.hpp"
 #include "Log.hpp"
 #include "Timers.hpp"
@@ -31,6 +32,8 @@ uint8_t Bus::ioWriteMask(uint32_t offset) {
         case 0x130:              // KEYINPUT
         case 0x131:
             return 0x00;
+        case 0x084:              // SOUNDCNT_X: bits 0-3 are PSG active flags
+            return 0x80;
         default:
             return 0xFF;
     }
@@ -146,6 +149,14 @@ void Bus::write8(uint32_t addr, uint8_t value) {
             if (timers != nullptr && offset >= 0x100 && offset < 0x110) {
                 timers->onRegisterWrite(offset - 0x100);
             }
+            if (apu != nullptr) {
+                if (offset >= 0x60 && offset < 0xA0) {
+                    apu->onRegisterWrite(offset);
+                } else if (offset >= 0xA0 && offset < 0xA8) {
+                    apu->onFifoWrite(static_cast<int>(offset - 0xA0) / 4,
+                                     value);
+                }
+            }
             return;
         }
         case 0x05:
@@ -198,6 +209,18 @@ void Bus::notifyVBlank() {
 void Bus::notifyHBlank() {
     if (dma != nullptr) {
         dma->onHBlank();
+    }
+}
+
+void Bus::notifyTimerOverflow(int timer) {
+    if (apu != nullptr) {
+        apu->onTimerOverflow(timer);
+    }
+}
+
+void Bus::requestFifoDMA(int fifo) {
+    if (dma != nullptr) {
+        dma->onFifoRequest(fifo);
     }
 }
 

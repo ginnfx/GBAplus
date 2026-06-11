@@ -40,6 +40,30 @@ void DMA::onHBlank() {
     runForTiming(TIMING_HBLANK);
 }
 
+void DMA::onFifoRequest(int fifo) {
+    const uint32_t fifoAddr = fifo == 0 ? 0x040000A0 : 0x040000A4;
+    for (int ch = 1; ch <= 2; ++ch) {
+        if (!channels[ch].active || channels[ch].dst != fifoAddr) {
+            continue;
+        }
+        const uint16_t ctrl = bus.read16(channelBase(ch) + 0xA);
+        if (!(ctrl & CTRL_ENABLE) || ((ctrl >> 12) & 3) != TIMING_SPECIAL) {
+            continue;
+        }
+        TRACE_LOG("DMA%d: FIFO %c refill from 0x%08X", ch, 'A' + fifo,
+                  channels[ch].src);
+        // Sound FIFO mode is always 4 x 32 bits with the source advancing.
+        for (int i = 0; i < 4; ++i) {
+            bus.write32(fifoAddr, bus.read32(channels[ch].src));
+            channels[ch].src += 4;
+        }
+        if (ctrl & CTRL_IRQ) {
+            bus.requestInterrupt(
+                static_cast<uint16_t>(Bus::IRQ_DMA0 << ch));
+        }
+    }
+}
+
 void DMA::runForTiming(uint16_t timing) {
     for (int i = 0; i < 4; ++i) {
         if (!channels[i].active) {

@@ -4,10 +4,12 @@
 #include <cstdio>
 #include <string>
 
+#include "APU.hpp"
 #include "ARM7TDMI.hpp"
 #include "Bus.hpp"
 #include "DMA.hpp"
 #include "PPU.hpp"
+#include "Timers.hpp"
 
 namespace {
 
@@ -418,6 +420,216 @@ void testHLEInterruptDispatch(Bus& bus) {
           cpu.reg(15));
 }
 
+// ARM halfword/signed transfers: STRH stores 16 bits, LDRH zero-extends,
+// LDRSB/LDRSH sign-extend.
+void testARMHalfwordTransfer(Bus& bus) {
+    std::printf("Test: ARM halfword/signed transfers\n");
+    ARM7TDMI cpu(bus);
+    cpu.reset();
+
+    const uint32_t base = 0x02000E00;
+    const uint32_t data = 0x02000F00;
+    cpu.setReg(0, data);
+    cpu.setReg(1, 0x1234BEEF);
+    bus.write32(base + 0x00, 0xE1C010B0);  // STRH  r1, [r0]
+    bus.write32(base + 0x04, 0xE1D020B0);  // LDRH  r2, [r0]
+    bus.write32(base + 0x08, 0xE1D030D1);  // LDRSB r3, [r0, #1]
+    bus.write32(base + 0x0C, 0xE1D040F0);  // LDRSH r4, [r0]
+    bus.write32(base + 0x10, 0xEAFFFFFE);  // B .
+    cpu.setReg(15, base);
+    for (int i = 0; i < 4; ++i) {
+        cpu.step();
+    }
+
+    CHECK(bus.read16(data) == 0xBEEF && bus.read16(data + 2) == 0,
+          "STRH stored only 16 bits (got 0x%04X, 0x%04X)", bus.read16(data),
+          bus.read16(data + 2));
+    CHECK(cpu.reg(2) == 0xBEEF, "LDRH zero-extended (got 0x%08X)",
+          cpu.reg(2));
+    CHECK(cpu.reg(3) == 0xFFFFFFBE, "LDRSB sign-extended (got 0x%08X)",
+          cpu.reg(3));
+    CHECK(cpu.reg(4) == 0xFFFFBEEF, "LDRSH sign-extended (got 0x%08X)",
+          cpu.reg(4));
+}
+
+// MUL/MLA and the long multiplies, including the S-bit N flag on SMULL.
+void testARMMultiply(Bus& bus) {
+    std::printf("Test: ARM multiply\n");
+    ARM7TDMI cpu(bus);
+    cpu.reset();
+
+    const uint32_t base = 0x02001100;
+    cpu.setReg(0, 7);
+    cpu.setReg(1, 6);
+    cpu.setReg(8, 0x80000000);
+    cpu.setReg(9, 4);
+    cpu.setReg(10, 0xFFFFFFFE);  // -2
+    cpu.setReg(11, 3);
+    bus.write32(base + 0x00, 0xE0020190);  // MUL    r2, r0, r1
+    bus.write32(base + 0x04, 0xE0232190);  // MLA    r3, r0, r1, r2
+    bus.write32(base + 0x08, 0xE0854998);  // UMULL  r4, r5, r8, r9
+    bus.write32(base + 0x0C, 0xE0D76B9A);  // SMULLS r6, r7, r10, r11
+    bus.write32(base + 0x10, 0xEAFFFFFE);  // B .
+    cpu.setReg(15, base);
+    for (int i = 0; i < 4; ++i) {
+        cpu.step();
+    }
+
+    CHECK(cpu.reg(2) == 42, "MUL: 7*6 == 42 (got %u)", cpu.reg(2));
+    CHECK(cpu.reg(3) == 84, "MLA: 7*6+42 == 84 (got %u)", cpu.reg(3));
+    CHECK(cpu.reg(4) == 0 && cpu.reg(5) == 2,
+          "UMULL: 0x80000000*4 == 2:0 (got %u:%u)", cpu.reg(5), cpu.reg(4));
+    CHECK(cpu.reg(6) == 0xFFFFFFFA && cpu.reg(7) == 0xFFFFFFFF,
+          "SMULL: -2*3 == -6 (got 0x%08X:0x%08X)", cpu.reg(7), cpu.reg(6));
+    CHECK(cpu.getCPSR() & ARM7TDMI::FLAG_N,
+          "SMULLS set N for negative result (CPSR=0x%08X)", cpu.getCPSR());
+}
+
+// MSR field masks: the flags field is writable, the T bit never is.
+void testPSRTransfer(Bus& bus) {
+    std::printf("Test: MRS/MSR\n");
+    ARM7TDMI cpu(bus);
+    cpu.reset();
+
+    const uint32_t base = 0x02001200;
+    bus.write32(base + 0x00, 0xE3A0020F);  // MOV r0, #0xF0000000
+    bus.write32(base + 0x04, 0xE128F000);  // MSR CPSR_f, r0
+    bus.write32(base + 0x08, 0xE10F1000);  // MRS r1, CPSR
+    bus.write32(base + 0x0C, 0xE3A0203F);  // MOV r2, #0x3F (System + T bit)
+    bus.write32(base + 0x10, 0xE121F002);  // MSR CPSR_c, r2
+    bus.write32(base + 0x14, 0xE10F3000);  // MRS r3, CPSR
+    bus.write32(base + 0x18, 0xEAFFFFFE);  // B .
+    cpu.setReg(15, base);
+    for (int i = 0; i < 6; ++i) {
+        cpu.step();
+    }
+
+    CHECK((cpu.reg(1) & 0xF0000000) == 0xF0000000,
+          "MSR flags field landed in CPSR (MRS got 0x%08X)", cpu.reg(1));
+    CHECK((cpu.reg(3) & 0x20) == 0,
+          "T bit rejected by MSR control write (got 0x%08X)", cpu.reg(3));
+    CHECK((cpu.reg(3) & 0x1F) == 0x1F,
+          "mode bits written through control field (got 0x%02X)",
+          cpu.reg(3) & 0x1F);
+    CHECK(!cpu.inThumbState(), "CPU still executing ARM after MSR");
+}
+
+// Hardware timers: prescaler, reload-on-overflow, cascade, and the IRQ bit.
+void testTimers(Bus& bus) {
+    std::printf("Test: hardware timers\n");
+    Timers timers(bus);
+    bus.attachTimers(&timers);
+
+    bus.write16(0x04000100, 0xFFF0);  // TM0CNT_L: reload
+    bus.write16(0x04000102, 0x00C1);  // TM0CNT_H: enable, IRQ, prescaler 64
+    CHECK(bus.read16(0x04000100) == 0xFFF0,
+          "counter loaded from reload on enable (got 0x%04X)",
+          bus.read16(0x04000100));
+
+    timers.step(64);  // one prescaled tick
+    CHECK(bus.read16(0x04000100) == 0xFFF1,
+          "prescaler 64: one tick after 64 cycles (got 0x%04X)",
+          bus.read16(0x04000100));
+
+    bus.write16(0x04000104, 0x0000);  // TM1CNT_L: reload 0
+    bus.write16(0x04000106, 0x0084);  // TM1CNT_H: enable, cascade
+
+    timers.step(15 * 64);  // counter 0xFFF1 + 15 -> overflow
+    CHECK(bus.read16(0x04000100) == 0xFFF0,
+          "timer 0 reloaded on overflow (got 0x%04X)",
+          bus.read16(0x04000100));
+    CHECK(bus.read16(0x04000104) == 1,
+          "timer 1 cascaded on timer 0 overflow (got %u)",
+          bus.read16(0x04000104));
+    CHECK(bus.read16(0x04000202) & (1u << 3),
+          "timer 0 IRQ raised in IF (IF=0x%04X)", bus.read16(0x04000202));
+}
+
+// PSG square channel: trigger raises the active flag, the mixer produces
+// non-silent samples, and the length counter silences the channel.
+void testAPUSquare(Bus& bus) {
+    std::printf("Test: APU square channel\n");
+    APU apu(bus);
+    bus.attachAPU(&apu);
+
+    bus.write16(0x04000084, 0x0080);  // SOUNDCNT_X: master enable
+    bus.write16(0x04000080, 0xFF77);  // SOUNDCNT_L: all channels, vol 7/7
+    bus.write16(0x04000082, 0x0002);  // SOUNDCNT_H: PSG 100%
+    bus.write16(0x04000062, 0xF080);  // 50% duty, constant volume 15
+    bus.write16(0x04000064, 0x8400);  // trigger, freq 1024
+
+    CHECK(bus.read16(0x04000084) & 1,
+          "square 1 active flag in SOUNDCNT_X (got 0x%04X)",
+          bus.read16(0x04000084));
+
+    apu.step(APU::CYCLES_PER_SAMPLE * 64);
+    CHECK(apu.pendingFrames() >= 64, "64 frames generated (got %zu)",
+          apu.pendingFrames());
+    int16_t frames[128];
+    apu.drainSamples(frames, 64);
+    bool nonzero = false;
+    for (int i = 0; i < 128; ++i) {
+        nonzero = nonzero || frames[i] != 0;
+    }
+    CHECK(nonzero, "square wave produced non-silent samples");
+
+    // Re-trigger with length 1 and the length counter enabled: the channel
+    // must fall silent within two frame-sequencer steps (<= 131072 cycles).
+    bus.write16(0x04000062, 0xF0BF);  // length field 63 -> counter = 1
+    bus.write16(0x04000064, 0xC400);  // trigger + length enable
+    apu.step(131072);
+    CHECK((bus.read16(0x04000084) & 1) == 0,
+          "length expiry cleared the active flag (got 0x%04X)",
+          bus.read16(0x04000084));
+}
+
+// Direct Sound: timer 0 overflows drain FIFO A; once half empty, DMA 1 in
+// special mode refills it through the Bus.
+void testAPUFifoDMA(Bus& bus) {
+    std::printf("Test: APU Direct Sound FIFO + DMA refill\n");
+    APU apu(bus);
+    bus.attachAPU(&apu);
+    DMA dma(bus);
+    bus.attachDMA(&dma);
+    Timers timers(bus);
+    bus.attachTimers(&timers);
+
+    bus.write16(0x04000084, 0x0080);  // master enable
+    bus.write16(0x04000082, 0x0304);  // FIFO A: L+R, 100%, timer 0
+
+    for (int i = 0; i < 8; ++i) {
+        bus.write32(0x040000A0, 0x40404040);
+    }
+    CHECK(apu.fifoCount(0) == 32, "FIFO A filled by CPU writes (count=%d)",
+          apu.fifoCount(0));
+
+    // DMA1: source in EWRAM, destination FIFO_A, special timing, repeat,
+    // 32-bit, destination fixed.
+    const uint32_t src = 0x02001300;
+    for (uint32_t i = 0; i < 16; ++i) {
+        bus.write8(src + i, 0x55);
+    }
+    bus.write32(0x040000BC, src);
+    bus.write32(0x040000C0, 0x040000A0);
+    bus.write16(0x040000C6, 0xB640);
+
+    // Timer 0 overflows every cycle (reload 0xFFFF, prescaler 1). After 17
+    // overflows the FIFO has dropped to 16 once (refilled +16) and then
+    // lost one more: 32 - 17 + 16 = 31.
+    bus.write16(0x04000100, 0xFFFF);
+    bus.write16(0x04000102, 0x0080);
+    timers.step(17);
+    CHECK(apu.fifoCount(0) == 31,
+          "DMA1 refilled FIFO A at half-empty (count=%d)", apu.fifoCount(0));
+
+    apu.step(APU::CYCLES_PER_SAMPLE);
+    int16_t frame[2] = {0, 0};
+    apu.drainSamples(frame, 1);
+    CHECK(frame[0] != 0 && frame[1] != 0,
+          "FIFO sample reached both output channels (got %d, %d)", frame[0],
+          frame[1]);
+}
+
 }  // namespace
 
 int main() {
@@ -472,6 +684,30 @@ int main() {
     {
         Bus bus;
         testHLEInterruptDispatch(bus);
+    }
+    {
+        Bus bus;
+        testARMHalfwordTransfer(bus);
+    }
+    {
+        Bus bus;
+        testARMMultiply(bus);
+    }
+    {
+        Bus bus;
+        testPSRTransfer(bus);
+    }
+    {
+        Bus bus;
+        testTimers(bus);
+    }
+    {
+        Bus bus;
+        testAPUSquare(bus);
+    }
+    {
+        Bus bus;
+        testAPUFifoDMA(bus);
     }
 
     if (failures == 0) {

@@ -24,6 +24,11 @@ public:
     void onVBlank();
     void onHBlank();
 
+    // Sound FIFO refill (special timing on channels 1/2): transfers 4 words
+    // to the requesting FIFO, ignoring the word count and keeping the
+    // destination fixed.
+    void onFifoRequest(int fifo);
+
 private:
     // Control register bits.
     static constexpr uint16_t CTRL_REPEAT  = 1u << 9;

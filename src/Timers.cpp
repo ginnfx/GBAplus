@@ -78,6 +78,7 @@ void Timers::advance(int index, uint32_t ticks) {
 
 void Timers::overflowed(int index) {
     const Timer& t = timers[index];
+    bus.notifyTimerOverflow(index);  // clocks the APU's Direct Sound FIFOs
     if (t.irqEnabled) {
         // Timer IRQs occupy IF bits 3-6.
         bus.requestInterrupt(static_cast<uint16_t>(Bus::IRQ_TIMER0 << index));
