@@ -34,6 +34,9 @@ target_link_libraries(gba_emu PRIVATE gba_core SDL2::SDL2)
 add_executable(gba_test_harness src/test_main.cpp)
 target_link_libraries(gba_test_harness PRIVATE gba_core)
 
+add_executable(gba_diag src/diag_main.cpp)
+target_link_libraries(gba_diag PRIVATE gba_core)
+
 foreach(target gba_core gba_emu gba_test_harness)
     if(MSVC)
         target_compile_options(${target} PRIVATE /W4)

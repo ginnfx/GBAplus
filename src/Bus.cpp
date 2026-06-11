@@ -449,8 +449,14 @@ void Bus::detectBackupType() {
         eepromBits.clear();
         eepromReadActive = false;
     } else {
-        backup = BackupType::SRAM;  // explicit SRAM_V or no ID at all
+        // Explicit SRAM_V / SRAM_F_V, or no ID at all. The fallthrough
+        // default is also SRAM, but matching the strings keeps the
+        // detection honest for ROMs like Aria of Sorrow (SRAM_F_V102).
+        backup = BackupType::SRAM;
         backupMem.assign(SRAM_SIZE, 0);
+        if (!contains("SRAM_V") && !contains("SRAM_F_V")) {
+            TRACE_LOG("no backup ID string; defaulting to SRAM");
+        }
     }
     flashState = FlashState::Ready;
     flashIdMode = false;
