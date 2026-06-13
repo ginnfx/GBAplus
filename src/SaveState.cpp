@@ -41,6 +41,14 @@ void Bus::serialize(Serializer& s) const {
     s.pod(eepromReadActive);
     s.pod(eepromReadPos);
     s.pod(eepromReadValue);
+
+    // Cartridge GPIO + RTC. (Wait-state fields are derived from io[0x204] and
+    // rebuilt on load, so they are not stored.)
+    s.pod(hasRtc);
+    s.pod(gpioData);
+    s.pod(gpioDir);
+    s.pod(gpioReadable);
+    s.pod(rtc);
 }
 
 void Bus::deserialize(Deserializer& d) {
@@ -70,6 +78,14 @@ void Bus::deserialize(Deserializer& d) {
     d.pod(eepromReadActive);
     d.pod(eepromReadPos);
     d.pod(eepromReadValue);
+
+    d.pod(hasRtc);
+    d.pod(gpioData);
+    d.pod(gpioDir);
+    d.pod(gpioReadable);
+    d.pod(rtc);
+
+    updateWaitstate();  // rebuild the wait-state table from the restored io[]
 }
 
 uint32_t Bus::romHash() const {
@@ -162,6 +178,9 @@ void APU::serialize(Serializer& s) const {
     s.pod(wave);
     s.pod(noise);
     s.pod(fifos);
+    s.pod(waveAltBank);
+    s.pod(wavePlayBank);
+    s.pod(waveDimension);
     s.pod(sampleAcc);
     s.pod(frameAcc);
     s.pod(frameStep);
@@ -172,6 +191,9 @@ void APU::deserialize(Deserializer& d) {
     d.pod(wave);
     d.pod(noise);
     d.pod(fifos);
+    d.pod(waveAltBank);
+    d.pod(wavePlayBank);
+    d.pod(waveDimension);
     d.pod(sampleAcc);
     d.pod(frameAcc);
     d.pod(frameStep);

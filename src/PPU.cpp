@@ -118,10 +118,9 @@ void PPU::renderScanline(int line) {
             renderTiledLine(line, 0x0, 0xC);
             break;
         case 3:
-            renderMode3(line);
-            break;
         case 4:
-            renderMode4(line);
+        case 5:
+            renderBitmapLine(line, mode);
             break;
         default:
             TRACE_LOG("renderScanline: unimplemented video mode %u", mode);
@@ -132,39 +131,59 @@ void PPU::renderScanline(int line) {
     }
 }
 
-// Mode 3: single 240x160 16bpp bitmap straight in VRAM.
-void PPU::renderMode3(int line) {
-    for (int x = 0; x < SCREEN_WIDTH; ++x) {
-        const uint32_t addr =
-            VRAM_BASE + static_cast<uint32_t>(line * SCREEN_WIDTH + x) * 2;
-        fb[line * SCREEN_WIDTH + x] = bgr555ToRGBA(bus.read16(addr));
-    }
-}
-
-// Mode 4: 240x160 8bpp paletted bitmap with two pages for double
-// buffering; DISPCNT bit 4 selects the displayed page. Palette index 0 is
-// transparent, leaving the backdrop visible under sprites.
-void PPU::renderMode4(int line) {
+// Bitmap modes 3/4/5. BG2 is a framebuffer in VRAM sampled through the BG2
+// affine transform (so it scales/rotates like Mode 7), composited over the
+// backdrop with sprites on top:
+//   mode 3 - single 240x160 15bpp page
+//   mode 4 - paletted 240x160 page pair (index 0 transparent)
+//   mode 5 - 160x128 15bpp page pair
+// Modes 4/5 double-buffer; DISPCNT bit 4 selects the displayed page. With the
+// power-on identity matrix (PA=PD=1.0, reference 0) the affine walk reduces to
+// a straight (x, line) lookup, so existing mode 3/4 content is unaffected.
+void PPU::renderBitmapLine(int line, int mode) {
+    (void)line;  // sampling is driven by the affine accumulators, not `line`
     const uint16_t dispcnt = bus.read16(REG_DISPCNT);
-    const uint32_t page = (dispcnt & (1u << 4)) ? 0xA000u : 0u;
+    const bool bg2on = dispcnt & (1u << 10);
     const uint16_t bg2cnt = bus.read16(REG_BG0CNT + 4);
     const int bgPriority = bg2cnt & 3;
-    const bool bg2on = dispcnt & (1u << 10);
+
+    const int bmpW = (mode == 5) ? 160 : 240;
+    const int bmpH = (mode == 5) ? 128 : 160;
+    const bool paletted = (mode == 4);
+    const uint32_t page =
+        (mode != 3 && (dispcnt & (1u << 4))) ? 0xA000u : 0u;
+
+    const int32_t pa = static_cast<int16_t>(bus.read16(REG_BG2PA));
+    const int32_t pc = static_cast<int16_t>(bus.read16(REG_BG2PA + 4));
+    int32_t cx = affineX[0];
+    int32_t cy = affineY[0];
 
     uint32_t colors[SCREEN_WIDTH];
     int priorities[SCREEN_WIDTH];
     const uint32_t backdrop = paletteColor(0);
-    for (int x = 0; x < SCREEN_WIDTH; ++x) {
+    for (int x = 0; x < SCREEN_WIDTH; ++x, cx += pa, cy += pc) {
         colors[x] = backdrop;
         priorities[x] = PRIORITY_BACKDROP;
-        if (bg2on) {
+        if (!bg2on) {
+            continue;
+        }
+        const int tx = cx >> 8;
+        const int ty = cy >> 8;
+        if (tx < 0 || ty < 0 || tx >= bmpW || ty >= bmpH) {
+            continue;  // outside the bitmap: backdrop shows through
+        }
+        if (paletted) {
             const uint8_t index = bus.read8(
-                VRAM_BASE + page +
-                static_cast<uint32_t>(line * SCREEN_WIDTH + x));
+                VRAM_BASE + page + static_cast<uint32_t>(ty * bmpW + tx));
             if (index != 0) {
                 colors[x] = paletteColor(index);
                 priorities[x] = bgPriority;
             }
+        } else {
+            const uint32_t addr = VRAM_BASE + page +
+                static_cast<uint32_t>(ty * bmpW + tx) * 2;
+            colors[x] = bgr555ToRGBA(bus.read16(addr));
+            priorities[x] = bgPriority;
         }
     }
 
@@ -543,6 +562,11 @@ void PPU::renderSpritesLine(int line, uint16_t* objColor, uint8_t* objPrio,
 
         const bool is8bpp = attr0 & 0x2000;
         const uint32_t baseTile = attr2 & 0x3FF;
+        // In the bitmap video modes (3-5) the lower half of OBJ VRAM overlaps
+        // the BG2 framebuffer, so tiles 0-511 are unusable for sprites.
+        if ((bus.read16(REG_DISPCNT) & 0x7) >= 3 && baseTile < 512) {
+            continue;
+        }
         const int priority = (attr2 >> 10) & 3;
         const uint32_t palBank = attr2 >> 12;
         const bool hflip = !affine && (attr1 & 0x1000);

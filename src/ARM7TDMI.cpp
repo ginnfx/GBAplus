@@ -42,10 +42,10 @@ bool ARM7TDMI::irqPending() const {
     if (cpsr & BIT_I) {
         return false;
     }
-    if (!(bus.read16(0x04000208) & 1)) {  // REG_IME
+    if (!(bus.peek16(0x04000208) & 1)) {  // REG_IME
         return false;
     }
-    return (bus.read16(0x04000200) & bus.read16(0x04000202)) != 0;  // IE & IF
+    return (bus.peek16(0x04000200) & bus.peek16(0x04000202)) != 0;  // IE & IF
 }
 
 void ARM7TDMI::enterIRQ() {
@@ -121,7 +121,7 @@ void ARM7TDMI::step() {
         // Asleep after Halt/IntrWait: wake when any enabled interrupt is
         // requested (IE & IF), independent of IME. The system clock keeps
         // advancing around the sleeping core.
-        if ((bus.read16(0x04000200) & bus.read16(0x04000202)) == 0) {
+        if ((bus.peek16(0x04000200) & bus.peek16(0x04000202)) == 0) {
             return;
         }
         halted = false;

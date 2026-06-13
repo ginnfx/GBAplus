@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <ctime>
 #include <fstream>
 
 #include "APU.hpp"
@@ -32,6 +33,8 @@ Bus::Bus() {
     // SOUNDBIAS mid-level bias, as left by the BIOS.
     io[0x088] = 0x00; io[0x089] = 0x02;
     backupMem.assign(SRAM_SIZE, 0);
+    rtc.status = 0x40;  // S3511 powers up in 24-hour mode
+    updateWaitstate();  // seed the wait-state cost table from WAITCNT = 0
 }
 
 // Game-facing IO write masks: a 0 bit is read-only and survives any game
@@ -69,7 +72,44 @@ uint32_t Bus::mirrorVRAM(uint32_t addr) {
     return offset;
 }
 
+// Public memory access. Every access charges the bus its wait-state cost into
+// cycleAccum (consumed once per CPU step); the 16/32-bit forms compose from the
+// private byte dispatcher so the cost is charged exactly once per access rather
+// than once per constituent byte.
 uint8_t Bus::read8(uint32_t addr) {
+    cycleAccum += accessCycles(addr, 1);
+    return dispatchRead8(addr);
+}
+
+uint16_t Bus::read16(uint32_t addr) {
+    addr &= ~1u;
+    cycleAccum += accessCycles(addr, 2);
+    return static_cast<uint16_t>(dispatchRead8(addr)) |
+           static_cast<uint16_t>(dispatchRead8(addr + 1) << 8);
+}
+
+uint32_t Bus::read32(uint32_t addr) {
+    addr &= ~3u;
+    cycleAccum += accessCycles(addr, 4);
+    return static_cast<uint32_t>(dispatchRead8(addr)) |
+           (static_cast<uint32_t>(dispatchRead8(addr + 1)) << 8) |
+           (static_cast<uint32_t>(dispatchRead8(addr + 2)) << 16) |
+           (static_cast<uint32_t>(dispatchRead8(addr + 3)) << 24);
+}
+
+// Side-effect-free, cost-free 16-bit read for the CPU's per-instruction
+// control-register polls (IME/IE/IF), so those reads don't inflate the clock.
+uint16_t Bus::peek16(uint32_t addr) {
+    addr &= ~1u;
+    return static_cast<uint16_t>(dispatchRead8(addr)) |
+           static_cast<uint16_t>(dispatchRead8(addr + 1) << 8);
+}
+
+uint8_t Bus::dispatchRead8(uint32_t addr) {
+    // Cartridge GPIO port (RTC etc.) overlays ROM at 0x080000C4-C9.
+    if (hasRtc && addr >= 0x080000C4 && addr <= 0x080000C9) {
+        return gpioRead(addr);
+    }
     switch (addr >> 24) {
         case 0x00:
             // BIOS is not mirrored; reads past 16 KiB are unmapped.
@@ -120,21 +160,36 @@ uint8_t Bus::read8(uint32_t addr) {
     }
 }
 
-// 16/32-bit accesses are composed from byte reads in little-endian order.
-// The GBA bus force-aligns addresses, so we mask off the low bits here.
-uint16_t Bus::read16(uint32_t addr) {
-    addr &= ~1u;
-    return static_cast<uint16_t>(read8(addr)) |
-           static_cast<uint16_t>(read8(addr + 1)) << 8;
-}
-
-uint32_t Bus::read32(uint32_t addr) {
-    addr &= ~3u;
-    return static_cast<uint32_t>(read16(addr)) |
-           static_cast<uint32_t>(read16(addr + 2)) << 16;
-}
-
 void Bus::write8(uint32_t addr, uint8_t value) {
+    cycleAccum += accessCycles(addr, 1);
+    dispatchWrite8(addr, value);
+}
+
+// 16/32-bit writes force-align and decompose into little-endian byte writes so
+// the per-byte IO side effects (DMA/timer/APU/SIO notifications) fire in the
+// same order as before; the wait-state cost is charged once for the access.
+void Bus::write16(uint32_t addr, uint16_t value) {
+    addr &= ~1u;
+    cycleAccum += accessCycles(addr, 2);
+    dispatchWrite8(addr, static_cast<uint8_t>(value));
+    dispatchWrite8(addr + 1, static_cast<uint8_t>(value >> 8));
+}
+
+void Bus::write32(uint32_t addr, uint32_t value) {
+    addr &= ~3u;
+    cycleAccum += accessCycles(addr, 4);
+    dispatchWrite8(addr, static_cast<uint8_t>(value));
+    dispatchWrite8(addr + 1, static_cast<uint8_t>(value >> 8));
+    dispatchWrite8(addr + 2, static_cast<uint8_t>(value >> 16));
+    dispatchWrite8(addr + 3, static_cast<uint8_t>(value >> 24));
+}
+
+void Bus::dispatchWrite8(uint32_t addr, uint8_t value) {
+    // Cartridge GPIO port (RTC etc.) overlays ROM at 0x080000C4-C9.
+    if (hasRtc && addr >= 0x080000C4 && addr <= 0x080000C9) {
+        gpioWrite(addr, value);
+        return;
+    }
     switch (addr >> 24) {
         case 0x02:
             ewram[addr & (EWRAM_SIZE - 1)] = value;
@@ -174,6 +229,16 @@ void Bus::write8(uint32_t addr, uint8_t value) {
                                      value);
                 }
             }
+            // WAITCNT (0x204) reshapes the cartridge wait-state cost table.
+            if (offset == 0x204 || offset == 0x205) {
+                updateWaitstate();
+            }
+            // A write to SIOCNT's high byte (containing the IRQ-enable bit,
+            // alongside the start bit just written to the low byte) drives a
+            // serial transfer; with no link partner we finish it immediately.
+            if (offset == 0x129) {
+                finishSerialTransfer();
+            }
             return;
         }
         case 0x05:
@@ -207,18 +272,6 @@ void Bus::write8(uint32_t addr, uint8_t value) {
             TRACE_LOG("write8 to unmapped address 0x%08X", addr);
             return;
     }
-}
-
-void Bus::write16(uint32_t addr, uint16_t value) {
-    addr &= ~1u;
-    write8(addr, static_cast<uint8_t>(value));
-    write8(addr + 1, static_cast<uint8_t>(value >> 8));
-}
-
-void Bus::write32(uint32_t addr, uint32_t value) {
-    addr &= ~3u;
-    write16(addr, static_cast<uint16_t>(value));
-    write16(addr + 2, static_cast<uint16_t>(value >> 16));
 }
 
 void Bus::notifyVBlank() {
@@ -286,7 +339,10 @@ void Bus::backupWrite(uint32_t addr, uint8_t value) {
 void Bus::flashWrite(uint32_t offset, uint8_t value) {
     switch (flashState) {
         case FlashState::Program:
-            backupMem[flashBank * 0x10000 + offset] = value;
+            // Flash programming can only clear bits (1->0); an erase is what
+            // sets them back to 1. AND so a program over un-erased cells keeps
+            // the existing zero bits, matching real flash behaviour.
+            backupMem[flashBank * 0x10000 + offset] &= value;
             sramWritten = true;
             flashState = FlashState::Ready;
             return;
@@ -472,6 +528,14 @@ void Bus::detectBackupType() {
     flashIdMode = false;
     flashErasePending = false;
     flashBank = 0;
+
+    // The Seiko S3511 RTC sits behind the cartridge GPIO port. Games that use
+    // it link the official "SIIRTC_V" library; detect that so the GPIO ports
+    // (0x080000C4-C8) overlay ROM only for carts that actually have the chip.
+    hasRtc = contains("SIIRTC_V");
+    if (hasRtc) {
+        TRACE_LOG("RTC (SIIRTC) detected; GPIO port enabled");
+    }
 }
 
 bool Bus::loadROM(const std::string& filepath) {
@@ -530,4 +594,282 @@ bool Bus::saveCartridgeData(const std::string& filepath) const {
     file.write(reinterpret_cast<const char*>(backupMem.data()),
                static_cast<std::streamsize>(backupMem.size()));
     return file.good();
+}
+
+// ---------------------------------------------------------------------------
+// Wait-state-aware access timing
+// ---------------------------------------------------------------------------
+// Per-access bus cost in CPU cycles, derived from the region and (for the
+// cartridge) the current WAITCNT setting. This is a per-access model — it does
+// not distinguish sequential from non-sequential fetches or emulate the ROM
+// prefetch buffer — but it is far closer than the previous flat cost and lets
+// games that retune WAITCNT change their effective speed.
+int Bus::accessCycles(uint32_t addr, int width) const {
+    switch (addr >> 24) {
+        case 0x00:  // BIOS  (32-bit bus, no wait)
+        case 0x03:  // IWRAM (32-bit bus)
+        case 0x04:  // IO    (32-bit bus)
+        case 0x07:  // OAM   (32-bit bus)
+            return 1;
+        case 0x02:  // EWRAM (16-bit bus, 2 wait states)
+            return width == 4 ? 6 : 3;
+        case 0x05:  // Palette (16-bit bus)
+        case 0x06:  // VRAM    (16-bit bus)
+            return width == 4 ? 2 : 1;
+        case 0x08:
+        case 0x09:  // ROM wait-state region 0
+            return width == 4 ? ws0N + ws0S : ws0N;
+        case 0x0A:
+        case 0x0B:  // ROM wait-state region 1
+            return width == 4 ? ws1N + ws1S : ws1N;
+        case 0x0C:
+        case 0x0D:  // ROM wait-state region 2 (0x0D also EEPROM)
+            return width == 4 ? ws2N + ws2S : ws2N;
+        case 0x0E:
+        case 0x0F:  // SRAM/Flash (8-bit bus)
+            return sramWait;
+        default:
+            return 1;
+    }
+}
+
+// Recomputes the cartridge wait-state cost table from WAITCNT (0x4000204).
+// First-access (N) waits come from a shared {4,3,2,8}-cycle table; the
+// second-access (S) waits are region-specific two-way selects (GBATEK).
+void Bus::updateWaitstate() {
+    const uint16_t w = static_cast<uint16_t>(io[0x204] | (io[0x205] << 8));
+    static const int firstWait[4] = {4, 3, 2, 8};
+    sramWait = 1 + firstWait[w & 3];
+    ws0N = 1 + firstWait[(w >> 2) & 3];
+    ws0S = 1 + (((w >> 4) & 1) ? 1 : 2);
+    ws1N = 1 + firstWait[(w >> 5) & 3];
+    ws1S = 1 + (((w >> 7) & 1) ? 1 : 4);
+    ws2N = 1 + firstWait[(w >> 8) & 3];
+    ws2S = 1 + (((w >> 10) & 1) ? 1 : 8);
+}
+
+int Bus::consumeCycles() {
+    const int64_t c = cycleAccum;
+    cycleAccum = 0;
+    return static_cast<int>(c);
+}
+
+// ---------------------------------------------------------------------------
+// Serial I/O (link cable) — no partner connected
+// ---------------------------------------------------------------------------
+// We do not emulate a second console, so any transfer the game starts finishes
+// instantly with the line pulled high (all-ones received data) and the serial
+// IRQ raised if requested. This keeps link-aware titles from hanging on a
+// transfer that would otherwise never complete.
+void Bus::finishSerialTransfer() {
+    uint16_t cnt = static_cast<uint16_t>(io[0x128] | (io[0x129] << 8));
+    if (!(cnt & (1u << 7))) {
+        return;  // start/busy bit not set: nothing to do
+    }
+    const uint16_t rcnt = static_cast<uint16_t>(io[0x134] | (io[0x135] << 8));
+    if (rcnt & (1u << 15)) {
+        return;  // GPIO / JOYBUS mode selected, not a serial transfer
+    }
+
+    const int mode = (cnt >> 12) & 3;  // 0/1 Normal, 2 Multiplayer, 3 UART
+    if (mode == 2) {
+        // Multiplayer: this console is the only player. Its own send data
+        // appears in SIOMULTI0; the absent players read back as 0xFFFF.
+        const uint16_t self =
+            static_cast<uint16_t>(io[0x12A] | (io[0x12B] << 8));
+        writeIODirect16(0x04000120, self);
+        writeIODirect16(0x04000122, 0xFFFF);
+        writeIODirect16(0x04000124, 0xFFFF);
+        writeIODirect16(0x04000126, 0xFFFF);
+    } else {
+        // Normal/UART: received shift register reads as all ones.
+        writeIODirect16(0x04000120, 0xFFFF);
+        writeIODirect16(0x04000122, 0xFFFF);
+    }
+
+    cnt &= static_cast<uint16_t>(~(1u << 7));  // clear start/busy
+    writeIODirect16(0x04000128, cnt);
+    if (cnt & (1u << 14)) {  // IRQ enable
+        requestInterrupt(IRQ_SERIAL);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Cartridge GPIO port + Seiko S3511 real-time clock (0x080000C4-C8)
+// ---------------------------------------------------------------------------
+uint8_t Bus::gpioRead(uint32_t addr) {
+    // When read-enable (control bit 0) is off the port is write-only and reads
+    // back 0. Only the low byte of each 16-bit port carries data.
+    if (!gpioReadable) {
+        return 0;
+    }
+    switch (addr & 0xFF) {
+        case 0xC4: return gpioData & 0xF;
+        case 0xC6: return gpioDir & 0xF;
+        case 0xC8: return gpioReadable ? 1 : 0;
+        default:   return 0;  // high bytes
+    }
+}
+
+void Bus::gpioWrite(uint32_t addr, uint8_t value) {
+    switch (addr & 0xFF) {
+        case 0xC4:
+            // Drive the GBA's output pins; the RTC keeps ownership of input
+            // pins (it sets gpioData's SIO bit when shifting out read data).
+            gpioData = static_cast<uint8_t>((value & gpioDir & 0xF) |
+                                            (gpioData & ~gpioDir & 0xF));
+            rtcClock();
+            break;
+        case 0xC6:
+            gpioDir = value & 0xF;
+            break;
+        case 0xC8:
+            gpioReadable = value & 1;
+            break;
+        default:
+            break;
+    }
+}
+
+namespace {
+uint8_t reverse8(uint8_t b) {
+    b = static_cast<uint8_t>((b & 0xF0) >> 4 | (b & 0x0F) << 4);
+    b = static_cast<uint8_t>((b & 0xCC) >> 2 | (b & 0x33) << 2);
+    b = static_cast<uint8_t>((b & 0xAA) >> 1 | (b & 0x55) << 1);
+    return b;
+}
+uint8_t toBcd(int v) {
+    return static_cast<uint8_t>(((v / 10) << 4) | (v % 10));
+}
+}  // namespace
+
+// Fills the datetime register set (7 BCD bytes: year, month, day, weekday,
+// hour, minute, second) from the host clock.
+void Bus::rtcFillDateTime(uint8_t* out) const {
+    const std::time_t t = std::time(nullptr);
+    std::tm lt{};
+#if defined(_WIN32)
+    localtime_s(&lt, &t);
+#else
+    localtime_r(&t, &lt);
+#endif
+    int hour = lt.tm_hour;
+    if (!(rtc.status & 0x40) && hour >= 12) {  // 12-hour mode: PM flag in bit 7
+        out[4] = static_cast<uint8_t>(toBcd(hour > 12 ? hour - 12 : hour) | 0x80);
+    } else {
+        out[4] = toBcd(hour);
+    }
+    out[0] = toBcd(lt.tm_year % 100);
+    out[1] = toBcd(lt.tm_mon + 1);
+    out[2] = toBcd(lt.tm_mday);
+    out[3] = toBcd(lt.tm_wday);
+    out[5] = toBcd(lt.tm_min);
+    out[6] = toBcd(lt.tm_sec);
+}
+
+void Bus::rtcBeginCommand() {
+    // Command byte: 0b0110 <reg[2:0]> <rw>. Some games clock it LSB-first, in
+    // which case the fixed 0b0110 lands in the low nibble; detect and reverse.
+    uint8_t c = rtc.command;
+    if ((c & 0xF0) != 0x60 && (c & 0x0F) == 0x06) {
+        c = reverse8(c);
+    }
+    const int reg = (c >> 1) & 7;
+    const bool reading = c & 1;
+    rtc.byteIndex = 0;
+    rtc.bitIndex = 0;
+    rtc.buffer = 0;
+    switch (reg) {
+        case 0:  // reset
+            rtc.status = 0x40;
+            rtc.state = RtcState::Idle;
+            break;
+        case 4:  // control/status: 1 byte
+            rtc.length = 1;
+            if (reading) rtc.data[0] = rtc.status;
+            rtc.state = reading ? RtcState::Reading : RtcState::Writing;
+            break;
+        case 2:  // datetime: 7 bytes
+            rtc.length = 7;
+            if (reading) rtcFillDateTime(rtc.data);
+            rtc.state = reading ? RtcState::Reading : RtcState::Writing;
+            break;
+        case 6: {  // time: 3 bytes (hour, minute, second)
+            rtc.length = 3;
+            if (reading) {
+                uint8_t dt[7];
+                rtcFillDateTime(dt);
+                rtc.data[0] = dt[4];
+                rtc.data[1] = dt[5];
+                rtc.data[2] = dt[6];
+            }
+            rtc.state = reading ? RtcState::Reading : RtcState::Writing;
+            break;
+        }
+        default:
+            rtc.state = RtcState::Idle;
+            break;
+    }
+}
+
+// Bit-banged S3511 protocol. CS frames a transaction; the command byte is
+// clocked in MSB-first on SCK rising edges, then data bytes follow LSB-first
+// (driven out on falling edges for reads, sampled on rising edges for writes).
+void Bus::rtcClock() {
+    const bool sck = gpioData & 1;
+    const bool sio = (gpioData >> 1) & 1;
+    const bool cs = (gpioData >> 2) & 1;
+
+    if (!cs) {  // chip deselected: idle, await a fresh command
+        rtc.state = RtcState::Command;
+        rtc.bits = 0;
+        rtc.command = 0;
+        rtc.prevSck = sck;
+        rtc.prevCs = cs;
+        return;
+    }
+    if (cs && !rtc.prevCs) {  // CS just rose
+        rtc.state = RtcState::Command;
+        rtc.bits = 0;
+        rtc.command = 0;
+    }
+    const bool rising = sck && !rtc.prevSck;
+    const bool falling = !sck && rtc.prevSck;
+    rtc.prevSck = sck;
+    rtc.prevCs = cs;
+
+    if (rtc.state == RtcState::Command) {
+        if (rising) {
+            rtc.command = static_cast<uint8_t>((rtc.command << 1) | (sio ? 1 : 0));
+            if (++rtc.bits == 8) {
+                rtcBeginCommand();
+            }
+        }
+    } else if (rtc.state == RtcState::Reading) {
+        if (falling) {  // present the next bit (LSB first) on SIO
+            const int bit = (rtc.data[rtc.byteIndex] >> rtc.bitIndex) & 1;
+            gpioData = static_cast<uint8_t>((gpioData & ~0x2u) | (bit << 1));
+            if (++rtc.bitIndex == 8) {
+                rtc.bitIndex = 0;
+                if (++rtc.byteIndex >= rtc.length) {
+                    rtc.state = RtcState::Idle;
+                }
+            }
+        }
+    } else if (rtc.state == RtcState::Writing) {
+        if (rising) {  // sample the incoming bit (LSB first)
+            rtc.buffer = static_cast<uint8_t>(rtc.buffer | ((sio ? 1 : 0) << rtc.bitIndex));
+            if (++rtc.bitIndex == 8) {
+                rtc.data[rtc.byteIndex] = rtc.buffer;
+                rtc.buffer = 0;
+                rtc.bitIndex = 0;
+                if (++rtc.byteIndex >= rtc.length) {
+                    if (rtc.length == 1) {
+                        rtc.status = rtc.data[0];  // control register write
+                    }
+                    rtc.state = RtcState::Idle;
+                }
+            }
+        }
+    }
 }

@@ -42,6 +42,7 @@ public:
     static constexpr uint16_t IRQ_HBLANK = 1u << 1;
     static constexpr uint16_t IRQ_VCOUNT = 1u << 2;
     static constexpr uint16_t IRQ_TIMER0 = 1u << 3;
+    static constexpr uint16_t IRQ_SERIAL = 1u << 7;
     static constexpr uint16_t IRQ_DMA0   = 1u << 8;
 
     Bus();
@@ -55,6 +56,16 @@ public:
     void write8(uint32_t addr, uint8_t value);
     void write16(uint32_t addr, uint16_t value);
     void write32(uint32_t addr, uint32_t value);
+
+    // Side-effect-free, cost-free 16-bit read for the CPU's per-instruction
+    // IME/IE/IF polling, so those reads don't charge bus cycles.
+    uint16_t peek16(uint32_t addr);
+
+    // Returns (and clears) the wait-state cycles charged since the last call.
+    // The frame loop consumes this after each CPU step to drive the PPU,
+    // timers and APU by real elapsed time instead of a flat per-instruction
+    // estimate.
+    int consumeCycles();
 
     // Loads a raw binary into the cartridge ROM region (0x08000000).
     // Returns false if the file could not be opened or exceeds 32 MiB.
@@ -160,6 +171,49 @@ private:
     bool eepromReadActive = false;
     int eepromReadPos = 0;
     uint64_t eepromReadValue = 0;
+
+    // Private byte-granular dispatch. The public read/write entry points charge
+    // the wait-state cost once, then compose 16/32-bit accesses from these so
+    // the cost (and the per-byte IO side effects) are applied exactly once.
+    uint8_t dispatchRead8(uint32_t addr);
+    void dispatchWrite8(uint32_t addr, uint8_t value);
+
+    // Wait-state timing (see Bus.cpp). updateWaitstate() rebuilds the table
+    // from WAITCNT; accessCycles() returns the cost of one access.
+    int accessCycles(uint32_t addr, int width) const;
+    void updateWaitstate();
+    int64_t cycleAccum = 0;
+    int ws0N = 0, ws0S = 0, ws1N = 0, ws1S = 0, ws2N = 0, ws2S = 0;
+    int sramWait = 0;
+
+    // Serial I/O: finish a started transfer immediately as "no link partner".
+    void finishSerialTransfer();
+
+    // Cartridge GPIO port + Seiko S3511 RTC (only active when hasRtc).
+    bool hasRtc = false;
+    uint8_t gpioData = 0;       // pin latch: bit0 SCK, bit1 SIO, bit2 CS
+    uint8_t gpioDir = 0;        // 1 = pin driven by the GBA (output)
+    bool gpioReadable = false;  // control bit 0: ports read back when set
+    uint8_t gpioRead(uint32_t addr);
+    void gpioWrite(uint32_t addr, uint8_t value);
+    void rtcClock();
+    void rtcBeginCommand();
+    void rtcFillDateTime(uint8_t* out) const;
+
+    enum class RtcState { Idle, Command, Reading, Writing };
+    struct Rtc {
+        RtcState state = RtcState::Idle;
+        uint8_t command = 0;
+        int bits = 0;       // command bits received
+        uint8_t data[7] = {};
+        int length = 0;     // bytes in the active register
+        int byteIndex = 0;
+        int bitIndex = 0;
+        uint8_t buffer = 0;
+        uint8_t status = 0x40;  // 24-hour mode
+        bool prevSck = false;
+        bool prevCs = false;
+    } rtc;
 
     static uint32_t mirrorVRAM(uint32_t addr);
     static uint8_t ioWriteMask(uint32_t offset);

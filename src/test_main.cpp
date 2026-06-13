@@ -1706,6 +1706,73 @@ void testAPUFifoDMA(Bus& bus) {
 
 }  // namespace
 
+// Wait-state-aware access timing: each access charges a region/WAITCNT cost
+// into the bus cycle accumulator, which consumeCycles() returns and clears.
+void testWaitstateTiming(Bus& bus) {
+    std::printf("Test: wait-state access timing\n");
+    bus.consumeCycles();  // clear any startup traffic
+
+    bus.read32(0x03000000);  // IWRAM, 32-bit bus
+    CHECK(bus.consumeCycles() == 1, "IWRAM 32-bit read = 1 cycle");
+
+    bus.read16(0x02000000);  // EWRAM, 16-bit bus + 2 wait states
+    CHECK(bus.consumeCycles() == 3, "EWRAM 16-bit read = 3 cycles");
+    bus.read32(0x02000000);
+    CHECK(bus.consumeCycles() == 6, "EWRAM 32-bit read = 6 cycles");
+
+    // Default WAITCNT (0): WS0 first access 5, second 3 -> 32-bit = 8.
+    bus.read32(0x08000000);
+    CHECK(bus.consumeCycles() == 8, "ROM 32-bit @ default WAITCNT = 8 cycles");
+
+    // Retune WS0 to 2 first-access waits + 1 second-access wait -> 3 + 2 = 5.
+    bus.write16(0x04000204, 0x0018);
+    bus.consumeCycles();  // discard the IO write's own cost
+    bus.read32(0x08000000);
+    CHECK(bus.consumeCycles() == 5, "ROM 32-bit @ tuned WAITCNT = 5 cycles");
+}
+
+// Serial link with no partner: starting a transfer finishes instantly with
+// all-ones received data, clears the busy bit, and raises the serial IRQ.
+void testSerialStub(Bus& bus) {
+    std::printf("Test: serial link stub\n");
+    // SIOCNT: start (bit7), IRQ enable (bit14), Normal-32 mode (bits 13:12=01).
+    bus.write16(0x04000128, (1u << 7) | (1u << 14) | (1u << 12));
+    CHECK((bus.read16(0x04000128) & (1u << 7)) == 0,
+          "start/busy cleared after transfer (SIOCNT=0x%04X)",
+          bus.read16(0x04000128));
+    CHECK(bus.read16(0x04000120) == 0xFFFF,
+          "received data reads all-ones (got 0x%04X)", bus.read16(0x04000120));
+    CHECK((bus.read16(0x04000202) & (1u << 7)) != 0,
+          "serial IRQ requested (IF=0x%04X)", bus.read16(0x04000202));
+}
+
+// Flash programming can only clear bits; re-programming a cell without an
+// erase ANDs the new value into it (an overwrite would have given 0x0F).
+void testFlashProgramAnd(Bus& bus) {
+    std::printf("Test: flash program bit-AND\n");
+    const std::string romPath = "/tmp/gba_emu_flash_and_test.gba";
+    {
+        std::FILE* f = std::fopen(romPath.c_str(), "wb");
+        const char pad[16] = {};
+        std::fwrite(pad, 1, sizeof(pad), f);
+        std::fwrite("FLASH1M_V103", 1, 12, f);
+        std::fclose(f);
+    }
+    bus.loadROM(romPath);
+    std::remove(romPath.c_str());
+
+    auto program = [&bus](uint32_t addr, uint8_t value) {
+        bus.write8(0x0E005555, 0xAA);
+        bus.write8(0x0E002AAA, 0x55);
+        bus.write8(0x0E005555, 0xA0);  // program command
+        bus.write8(addr, value);
+    };
+    program(0x0E000010, 0xF0);  // over erased 0xFF -> 0xF0
+    program(0x0E000010, 0x0F);  // AND -> 0x00
+    CHECK(bus.read8(0x0E000010) == 0x00,
+          "second program ANDs to 0x00 (got 0x%02X)", bus.read8(0x0E000010));
+}
+
 int main() {
     {
         Bus bus;
@@ -1788,6 +1855,18 @@ int main() {
     {
         Bus bus;
         testEEPROMBackup(bus);
+    }
+    {
+        Bus bus;
+        testFlashProgramAnd(bus);
+    }
+    {
+        Bus bus;
+        testWaitstateTiming(bus);
+    }
+    {
+        Bus bus;
+        testSerialStub(bus);
     }
     {
         Bus bus;

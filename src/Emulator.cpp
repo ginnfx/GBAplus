@@ -12,10 +12,15 @@ constexpr uint32_t REG_KEYINPUT = 0x04000130;
 constexpr uint32_t VRAM_BASE    = 0x06000000;
 constexpr uint32_t EWRAM_BASE   = 0x02000000;
 
-// The PPU completes one frame every 228 scanlines; the safety cap stops a
-// pathological state (PPU somehow never reaching VBlank) from spinning here.
-constexpr int MAX_FRAME_STEPS = PPU::CYCLES_SCANLINE * PPU::LINES_TOTAL;
-constexpr int APPROX_CYCLES_PER_INSTR = 4;
+// The PPU completes one frame every 228 scanlines; the safety cap (two frames
+// of cycles) stops a pathological state (PPU somehow never reaching VBlank)
+// from spinning here.
+constexpr long long MAX_FRAME_CYCLES =
+    2LL * PPU::CYCLES_SCANLINE * PPU::LINES_TOTAL;
+// While the CPU is halted it makes no counted bus accesses, so consumeCycles()
+// reports zero; advance the rest of the machine by a small quantum so time
+// still flows and the interrupt that wakes the CPU can arrive.
+constexpr int HALT_STEP_CYCLES = 8;
 }  // namespace
 
 Emulator::Emulator()
@@ -58,13 +63,19 @@ void Emulator::reset() {
 }
 
 void Emulator::runFrame() {
-    int guard = 0;
+    long long budget = 0;
     do {
         cpu.step();
-        ppu.step(APPROX_CYCLES_PER_INSTR);
-        timers.step(APPROX_CYCLES_PER_INSTR);
-        apu.step(APPROX_CYCLES_PER_INSTR);
-    } while (!ppu.frameReady() && ++guard < MAX_FRAME_STEPS);
+        int cycles = bus.consumeCycles();  // wait-state cost of this step
+        if (cycles <= 0) {
+            cycles = HALT_STEP_CYCLES;  // CPU halted: no bus traffic to charge
+        }
+        ppu.step(cycles);
+        timers.step(cycles);
+        apu.step(cycles);
+        bus.consumeCycles();  // discard PPU/timer/APU (and HBlank-DMA) traffic
+        budget += cycles;
+    } while (!ppu.frameReady() && budget < MAX_FRAME_CYCLES);
 }
 
 void Emulator::setKeys(uint16_t keyState) {

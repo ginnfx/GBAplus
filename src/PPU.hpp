@@ -46,8 +46,9 @@ public:
 
 private:
     void renderScanline(int line);
-    void renderMode3(int line);
-    void renderMode4(int line);
+    // Bitmap modes 3/4/5: BG2 is a framebuffer sampled through the BG2
+    // affine transform, composited over the backdrop with sprites on top.
+    void renderBitmapLine(int line, int mode);
     // Shared compositor for the tiled modes: text and affine layers are
     // drawn priority-ordered into the line buffers, then sprites.
     void renderTiledLine(int line, unsigned textMask, unsigned affineMask);

@@ -101,6 +101,7 @@ private:
 
     bool masterEnabled() const;
     void trigger(int channel);
+    void swapWaveBank();
     void popFifo(int fifo);
     void advanceClocks(int cycles);
     void clockFrameSequencer();
@@ -118,6 +119,15 @@ private:
     WaveChannel wave;
     NoiseChannel noise;
     Fifo fifos[2];
+
+    // Wave channel RAM is two 16-byte banks (32 4-bit samples each). The bank
+    // selected by SOUND3CNT_L bit 6 occupies the 0x90-0x9F window (and is the
+    // one played in single-bank mode); the inactive bank is held here and
+    // swapped into the window when bit 6 toggles. With the dimension bit
+    // (bit 5) set both banks play back-to-back as 64 samples.
+    uint8_t waveAltBank[16] = {};
+    int wavePlayBank = 0;
+    bool waveDimension = false;
     int sampleAcc = 0;
     int frameAcc = 0;
     int frameStep = 0;
