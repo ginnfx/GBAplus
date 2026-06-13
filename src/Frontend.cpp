@@ -14,6 +14,8 @@
 #include <vector>
 
 #if defined(_WIN32)
+#  define NOMINMAX
+#  define WIN32_LEAN_AND_MEAN
 #  include <windows.h>
 #elif defined(__APPLE__)
 #  include <mach-o/dyld.h>
