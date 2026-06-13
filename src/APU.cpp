@@ -28,6 +28,9 @@ bool APU::masterEnabled() const {
 }
 
 void APU::onRegisterWrite(uint32_t offset) {
+    if (offset >= 0x60 && offset < 0x80 && !masterEnabled()) {
+        return;
+    }
     switch (offset & ~1u) {
         case 0x60: {
             const uint16_t v = bus.read16(IO_BASE + 0x60);
@@ -64,9 +67,16 @@ void APU::onRegisterWrite(uint32_t offset) {
             break;
         }
         case 0x70: {
-            wave.dacOn = bus.read16(IO_BASE + 0x70) & 0x80;
+            const uint16_t v = bus.read16(IO_BASE + 0x70);
+            wave.dacOn = v & 0x80;
             if (!wave.dacOn) {
                 wave.active = false;
+            }
+            waveDimension = v & 0x20;
+            const int newBank = (v >> 6) & 1;
+            if (newBank != wavePlayBank) {
+                wavePlayBank = newBank;
+                swapWaveBank();
             }
             break;
         }
@@ -134,6 +144,19 @@ void APU::onRegisterWrite(uint32_t offset) {
         default:
             break;
     }
+}
+
+void APU::swapWaveBank() {
+    uint8_t window[16];
+    for (int i = 0; i < 16; ++i) {
+        window[i] = bus.read8(IO_BASE + WAVE_RAM + static_cast<uint32_t>(i));
+    }
+    for (int i = 0; i < 16; i += 2) {
+        bus.writeIODirect16(
+            IO_BASE + WAVE_RAM + static_cast<uint32_t>(i),
+            static_cast<uint16_t>(waveAltBank[i] | (waveAltBank[i + 1] << 8)));
+    }
+    std::copy(window, window + 16, waveAltBank);
 }
 
 void APU::trigger(int channel) {
@@ -235,10 +258,11 @@ void APU::advanceClocks(int cycles) {
     }
 
     const int wavePeriod = (2048 - wave.freq) * 8;
+    const int waveMask = waveDimension ? 63 : 31;
     wave.cycleAcc += cycles;
     while (wave.cycleAcc >= wavePeriod) {
         wave.cycleAcc -= wavePeriod;
-        wave.pos = (wave.pos + 1) & 31;
+        wave.pos = (wave.pos + 1) & waveMask;
     }
 
     const int noisePeriod = (noise.divisor << noise.shift) * 4;
@@ -336,9 +360,12 @@ int APU::waveOutput() const {
     if (!wave.active || !wave.dacOn) {
         return 0;
     }
+    const int idx = wave.pos & 31;
     const uint8_t byte =
-        bus.read8(IO_BASE + WAVE_RAM + static_cast<uint32_t>(wave.pos / 2));
-    const int s = wave.pos & 1 ? byte & 0xF : byte >> 4;
+        (waveDimension && (wave.pos & 32))
+            ? waveAltBank[idx / 2]
+            : bus.read8(IO_BASE + WAVE_RAM + static_cast<uint32_t>(idx / 2));
+    const int s = idx & 1 ? byte & 0xF : byte >> 4;
     if (wave.force75) {
         return s * 3 / 4;
     }

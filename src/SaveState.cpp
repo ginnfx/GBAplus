@@ -32,6 +32,12 @@ void Bus::serialize(Serializer& s) const {
     s.pod(eepromReadActive);
     s.pod(eepromReadPos);
     s.pod(eepromReadValue);
+
+    s.pod(hasRtc);
+    s.pod(gpioData);
+    s.pod(gpioDir);
+    s.pod(gpioReadable);
+    s.pod(rtc);
 }
 
 void Bus::deserialize(Deserializer& d) {
@@ -61,6 +67,14 @@ void Bus::deserialize(Deserializer& d) {
     d.pod(eepromReadActive);
     d.pod(eepromReadPos);
     d.pod(eepromReadValue);
+
+    d.pod(hasRtc);
+    d.pod(gpioData);
+    d.pod(gpioDir);
+    d.pod(gpioReadable);
+    d.pod(rtc);
+
+    updateWaitstate();
 }
 
 uint32_t Bus::romHash() const {
@@ -137,6 +151,9 @@ void APU::serialize(Serializer& s) const {
     s.pod(wave);
     s.pod(noise);
     s.pod(fifos);
+    s.pod(waveAltBank);
+    s.pod(wavePlayBank);
+    s.pod(waveDimension);
     s.pod(sampleAcc);
     s.pod(frameAcc);
     s.pod(frameStep);
@@ -147,6 +164,9 @@ void APU::deserialize(Deserializer& d) {
     d.pod(wave);
     d.pod(noise);
     d.pod(fifos);
+    d.pod(waveAltBank);
+    d.pod(wavePlayBank);
+    d.pod(waveDimension);
     d.pod(sampleAcc);
     d.pod(frameAcc);
     d.pod(frameStep);

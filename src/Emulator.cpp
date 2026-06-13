@@ -11,8 +11,9 @@ constexpr uint32_t REG_KEYINPUT = 0x04000130;
 constexpr uint32_t VRAM_BASE    = 0x06000000;
 constexpr uint32_t EWRAM_BASE   = 0x02000000;
 
-constexpr int MAX_FRAME_STEPS = PPU::CYCLES_SCANLINE * PPU::LINES_TOTAL;
-constexpr int APPROX_CYCLES_PER_INSTR = 4;
+constexpr long long MAX_FRAME_CYCLES =
+    2LL * PPU::CYCLES_SCANLINE * PPU::LINES_TOTAL;
+constexpr int HALT_STEP_CYCLES = 8;
 }
 
 Emulator::Emulator()
@@ -55,13 +56,19 @@ void Emulator::reset() {
 }
 
 void Emulator::runFrame() {
-    int guard = 0;
+    long long budget = 0;
     do {
         cpu.step();
-        ppu.step(APPROX_CYCLES_PER_INSTR);
-        timers.step(APPROX_CYCLES_PER_INSTR);
-        apu.step(APPROX_CYCLES_PER_INSTR);
-    } while (!ppu.frameReady() && ++guard < MAX_FRAME_STEPS);
+        int cycles = bus.consumeCycles();
+        if (cycles <= 0) {
+            cycles = HALT_STEP_CYCLES;
+        }
+        ppu.step(cycles);
+        timers.step(cycles);
+        apu.step(cycles);
+        bus.consumeCycles();
+        budget += cycles;
+    } while (!ppu.frameReady() && budget < MAX_FRAME_CYCLES);
 }
 
 void Emulator::setKeys(uint16_t keyState) {

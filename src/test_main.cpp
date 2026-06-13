@@ -1547,6 +1547,64 @@ void testAPUFifoDMA(Bus& bus) {
 
 }
 
+void testWaitstateTiming(Bus& bus) {
+    std::printf("Test: wait-state access timing\n");
+    bus.consumeCycles();
+
+    bus.read32(0x03000000);
+    CHECK(bus.consumeCycles() == 1, "IWRAM 32-bit read = 1 cycle");
+
+    bus.read16(0x02000000);
+    CHECK(bus.consumeCycles() == 3, "EWRAM 16-bit read = 3 cycles");
+    bus.read32(0x02000000);
+    CHECK(bus.consumeCycles() == 6, "EWRAM 32-bit read = 6 cycles");
+
+    bus.read32(0x08000000);
+    CHECK(bus.consumeCycles() == 8, "ROM 32-bit @ default WAITCNT = 8 cycles");
+
+    bus.write16(0x04000204, 0x0018);
+    bus.consumeCycles();
+    bus.read32(0x08000000);
+    CHECK(bus.consumeCycles() == 5, "ROM 32-bit @ tuned WAITCNT = 5 cycles");
+}
+
+void testSerialStub(Bus& bus) {
+    std::printf("Test: serial link stub\n");
+    bus.write16(0x04000128, (1u << 7) | (1u << 14) | (1u << 12));
+    CHECK((bus.read16(0x04000128) & (1u << 7)) == 0,
+          "start/busy cleared after transfer (SIOCNT=0x%04X)",
+          bus.read16(0x04000128));
+    CHECK(bus.read16(0x04000120) == 0xFFFF,
+          "received data reads all-ones (got 0x%04X)", bus.read16(0x04000120));
+    CHECK((bus.read16(0x04000202) & (1u << 7)) != 0,
+          "serial IRQ requested (IF=0x%04X)", bus.read16(0x04000202));
+}
+
+void testFlashProgramAnd(Bus& bus) {
+    std::printf("Test: flash program bit-AND\n");
+    const std::string romPath = "/tmp/gba_emu_flash_and_test.gba";
+    {
+        std::FILE* f = std::fopen(romPath.c_str(), "wb");
+        const char pad[16] = {};
+        std::fwrite(pad, 1, sizeof(pad), f);
+        std::fwrite("FLASH1M_V103", 1, 12, f);
+        std::fclose(f);
+    }
+    bus.loadROM(romPath);
+    std::remove(romPath.c_str());
+
+    auto program = [&bus](uint32_t addr, uint8_t value) {
+        bus.write8(0x0E005555, 0xAA);
+        bus.write8(0x0E002AAA, 0x55);
+        bus.write8(0x0E005555, 0xA0);
+        bus.write8(addr, value);
+    };
+    program(0x0E000010, 0xF0);
+    program(0x0E000010, 0x0F);
+    CHECK(bus.read8(0x0E000010) == 0x00,
+          "second program ANDs to 0x00 (got 0x%02X)", bus.read8(0x0E000010));
+}
+
 int main() {
     {
         Bus bus;
@@ -1629,6 +1687,18 @@ int main() {
     {
         Bus bus;
         testEEPROMBackup(bus);
+    }
+    {
+        Bus bus;
+        testFlashProgramAnd(bus);
+    }
+    {
+        Bus bus;
+        testWaitstateTiming(bus);
+    }
+    {
+        Bus bus;
+        testSerialStub(bus);
     }
     {
         Bus bus;

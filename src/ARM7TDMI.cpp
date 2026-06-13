@@ -40,10 +40,10 @@ bool ARM7TDMI::irqPending() const {
     if (cpsr & BIT_I) {
         return false;
     }
-    if (!(bus.read16(0x04000208) & 1)) {
+    if (!(bus.peek16(0x04000208) & 1)) {
         return false;
     }
-    return (bus.read16(0x04000200) & bus.read16(0x04000202)) != 0;
+    return (bus.peek16(0x04000200) & bus.peek16(0x04000202)) != 0;
 }
 
 void ARM7TDMI::enterIRQ() {
@@ -105,7 +105,7 @@ void ARM7TDMI::hleIrqReturn() {
 
 void ARM7TDMI::step() {
     if (halted) {
-        if ((bus.read16(0x04000200) & bus.read16(0x04000202)) == 0) {
+        if ((bus.peek16(0x04000200) & bus.peek16(0x04000202)) == 0) {
             return;
         }
         halted = false;

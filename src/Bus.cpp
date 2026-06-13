@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <ctime>
 #include <fstream>
 
 #include "APU.hpp"
@@ -25,6 +26,8 @@ Bus::Bus() {
     io[0x036] = 0x00; io[0x037] = 0x01;
     io[0x088] = 0x00; io[0x089] = 0x02;
     backupMem.assign(SRAM_SIZE, 0);
+    rtc.status = 0x40;
+    updateWaitstate();
 }
 
 uint8_t Bus::ioWriteMask(uint32_t offset) {
@@ -58,6 +61,36 @@ uint32_t Bus::mirrorVRAM(uint32_t addr) {
 }
 
 uint8_t Bus::read8(uint32_t addr) {
+    cycleAccum += accessCycles(addr, 1);
+    return dispatchRead8(addr);
+}
+
+uint16_t Bus::read16(uint32_t addr) {
+    addr &= ~1u;
+    cycleAccum += accessCycles(addr, 2);
+    return static_cast<uint16_t>(dispatchRead8(addr)) |
+           static_cast<uint16_t>(dispatchRead8(addr + 1) << 8);
+}
+
+uint32_t Bus::read32(uint32_t addr) {
+    addr &= ~3u;
+    cycleAccum += accessCycles(addr, 4);
+    return static_cast<uint32_t>(dispatchRead8(addr)) |
+           (static_cast<uint32_t>(dispatchRead8(addr + 1)) << 8) |
+           (static_cast<uint32_t>(dispatchRead8(addr + 2)) << 16) |
+           (static_cast<uint32_t>(dispatchRead8(addr + 3)) << 24);
+}
+
+uint16_t Bus::peek16(uint32_t addr) {
+    addr &= ~1u;
+    return static_cast<uint16_t>(dispatchRead8(addr)) |
+           static_cast<uint16_t>(dispatchRead8(addr + 1) << 8);
+}
+
+uint8_t Bus::dispatchRead8(uint32_t addr) {
+    if (hasRtc && addr >= 0x080000C4 && addr <= 0x080000C9) {
+        return gpioRead(addr);
+    }
     switch (addr >> 24) {
         case 0x00:
             if (addr < BIOS_SIZE) {
@@ -107,19 +140,32 @@ uint8_t Bus::read8(uint32_t addr) {
     }
 }
 
-uint16_t Bus::read16(uint32_t addr) {
-    addr &= ~1u;
-    return static_cast<uint16_t>(read8(addr)) |
-           static_cast<uint16_t>(read8(addr + 1)) << 8;
-}
-
-uint32_t Bus::read32(uint32_t addr) {
-    addr &= ~3u;
-    return static_cast<uint32_t>(read16(addr)) |
-           static_cast<uint32_t>(read16(addr + 2)) << 16;
-}
-
 void Bus::write8(uint32_t addr, uint8_t value) {
+    cycleAccum += accessCycles(addr, 1);
+    dispatchWrite8(addr, value);
+}
+
+void Bus::write16(uint32_t addr, uint16_t value) {
+    addr &= ~1u;
+    cycleAccum += accessCycles(addr, 2);
+    dispatchWrite8(addr, static_cast<uint8_t>(value));
+    dispatchWrite8(addr + 1, static_cast<uint8_t>(value >> 8));
+}
+
+void Bus::write32(uint32_t addr, uint32_t value) {
+    addr &= ~3u;
+    cycleAccum += accessCycles(addr, 4);
+    dispatchWrite8(addr, static_cast<uint8_t>(value));
+    dispatchWrite8(addr + 1, static_cast<uint8_t>(value >> 8));
+    dispatchWrite8(addr + 2, static_cast<uint8_t>(value >> 16));
+    dispatchWrite8(addr + 3, static_cast<uint8_t>(value >> 24));
+}
+
+void Bus::dispatchWrite8(uint32_t addr, uint8_t value) {
+    if (hasRtc && addr >= 0x080000C4 && addr <= 0x080000C9) {
+        gpioWrite(addr, value);
+        return;
+    }
     switch (addr >> 24) {
         case 0x02:
             ewram[addr & (EWRAM_SIZE - 1)] = value;
@@ -157,6 +203,12 @@ void Bus::write8(uint32_t addr, uint8_t value) {
                                      value);
                 }
             }
+            if (offset == 0x204 || offset == 0x205) {
+                updateWaitstate();
+            }
+            if (offset == 0x129) {
+                finishSerialTransfer();
+            }
             return;
         }
         case 0x05:
@@ -190,18 +242,6 @@ void Bus::write8(uint32_t addr, uint8_t value) {
             TRACE_LOG("write8 to unmapped address 0x%08X", addr);
             return;
     }
-}
-
-void Bus::write16(uint32_t addr, uint16_t value) {
-    addr &= ~1u;
-    write8(addr, static_cast<uint8_t>(value));
-    write8(addr + 1, static_cast<uint8_t>(value >> 8));
-}
-
-void Bus::write32(uint32_t addr, uint32_t value) {
-    addr &= ~3u;
-    write16(addr, static_cast<uint16_t>(value));
-    write16(addr + 2, static_cast<uint16_t>(value >> 16));
 }
 
 void Bus::notifyVBlank() {
@@ -261,7 +301,7 @@ void Bus::backupWrite(uint32_t addr, uint8_t value) {
 void Bus::flashWrite(uint32_t offset, uint8_t value) {
     switch (flashState) {
         case FlashState::Program:
-            backupMem[flashBank * 0x10000 + offset] = value;
+            backupMem[flashBank * 0x10000 + offset] &= value;
             sramWritten = true;
             flashState = FlashState::Ready;
             return;
@@ -433,6 +473,11 @@ void Bus::detectBackupType() {
     flashIdMode = false;
     flashErasePending = false;
     flashBank = 0;
+
+    hasRtc = contains("SIIRTC_V");
+    if (hasRtc) {
+        TRACE_LOG("RTC (SIIRTC) detected; GPIO port enabled");
+    }
 }
 
 bool Bus::loadROM(const std::string& filepath) {
@@ -491,4 +536,247 @@ bool Bus::saveCartridgeData(const std::string& filepath) const {
     file.write(reinterpret_cast<const char*>(backupMem.data()),
                static_cast<std::streamsize>(backupMem.size()));
     return file.good();
+}
+
+int Bus::accessCycles(uint32_t addr, int width) const {
+    switch (addr >> 24) {
+        case 0x00:
+        case 0x03:
+        case 0x04:
+        case 0x07:
+            return 1;
+        case 0x02:
+            return width == 4 ? 6 : 3;
+        case 0x05:
+        case 0x06:
+            return width == 4 ? 2 : 1;
+        case 0x08:
+        case 0x09:
+            return width == 4 ? ws0N + ws0S : ws0N;
+        case 0x0A:
+        case 0x0B:
+            return width == 4 ? ws1N + ws1S : ws1N;
+        case 0x0C:
+        case 0x0D:
+            return width == 4 ? ws2N + ws2S : ws2N;
+        case 0x0E:
+        case 0x0F:
+            return sramWait;
+        default:
+            return 1;
+    }
+}
+
+void Bus::updateWaitstate() {
+    const uint16_t w = static_cast<uint16_t>(io[0x204] | (io[0x205] << 8));
+    static const int firstWait[4] = {4, 3, 2, 8};
+    sramWait = 1 + firstWait[w & 3];
+    ws0N = 1 + firstWait[(w >> 2) & 3];
+    ws0S = 1 + (((w >> 4) & 1) ? 1 : 2);
+    ws1N = 1 + firstWait[(w >> 5) & 3];
+    ws1S = 1 + (((w >> 7) & 1) ? 1 : 4);
+    ws2N = 1 + firstWait[(w >> 8) & 3];
+    ws2S = 1 + (((w >> 10) & 1) ? 1 : 8);
+}
+
+int Bus::consumeCycles() {
+    const int64_t c = cycleAccum;
+    cycleAccum = 0;
+    return static_cast<int>(c);
+}
+
+void Bus::finishSerialTransfer() {
+    uint16_t cnt = static_cast<uint16_t>(io[0x128] | (io[0x129] << 8));
+    if (!(cnt & (1u << 7))) {
+        return;
+    }
+    const uint16_t rcnt = static_cast<uint16_t>(io[0x134] | (io[0x135] << 8));
+    if (rcnt & (1u << 15)) {
+        return;
+    }
+
+    const int mode = (cnt >> 12) & 3;
+    if (mode == 2) {
+        const uint16_t self =
+            static_cast<uint16_t>(io[0x12A] | (io[0x12B] << 8));
+        writeIODirect16(0x04000120, self);
+        writeIODirect16(0x04000122, 0xFFFF);
+        writeIODirect16(0x04000124, 0xFFFF);
+        writeIODirect16(0x04000126, 0xFFFF);
+    } else {
+        writeIODirect16(0x04000120, 0xFFFF);
+        writeIODirect16(0x04000122, 0xFFFF);
+    }
+
+    cnt &= static_cast<uint16_t>(~(1u << 7));
+    writeIODirect16(0x04000128, cnt);
+    if (cnt & (1u << 14)) {
+        requestInterrupt(IRQ_SERIAL);
+    }
+}
+
+uint8_t Bus::gpioRead(uint32_t addr) {
+    if (!gpioReadable) {
+        return 0;
+    }
+    switch (addr & 0xFF) {
+        case 0xC4: return gpioData & 0xF;
+        case 0xC6: return gpioDir & 0xF;
+        case 0xC8: return gpioReadable ? 1 : 0;
+        default:   return 0;
+    }
+}
+
+void Bus::gpioWrite(uint32_t addr, uint8_t value) {
+    switch (addr & 0xFF) {
+        case 0xC4:
+            gpioData = static_cast<uint8_t>((value & gpioDir & 0xF) |
+                                            (gpioData & ~gpioDir & 0xF));
+            rtcClock();
+            break;
+        case 0xC6:
+            gpioDir = value & 0xF;
+            break;
+        case 0xC8:
+            gpioReadable = value & 1;
+            break;
+        default:
+            break;
+    }
+}
+
+namespace {
+uint8_t reverse8(uint8_t b) {
+    b = static_cast<uint8_t>((b & 0xF0) >> 4 | (b & 0x0F) << 4);
+    b = static_cast<uint8_t>((b & 0xCC) >> 2 | (b & 0x33) << 2);
+    b = static_cast<uint8_t>((b & 0xAA) >> 1 | (b & 0x55) << 1);
+    return b;
+}
+uint8_t toBcd(int v) {
+    return static_cast<uint8_t>(((v / 10) << 4) | (v % 10));
+}
+}
+
+void Bus::rtcFillDateTime(uint8_t* out) const {
+    const std::time_t t = std::time(nullptr);
+    std::tm lt{};
+#if defined(_WIN32)
+    localtime_s(&lt, &t);
+#else
+    localtime_r(&t, &lt);
+#endif
+    int hour = lt.tm_hour;
+    if (!(rtc.status & 0x40) && hour >= 12) {
+        out[4] = static_cast<uint8_t>(toBcd(hour > 12 ? hour - 12 : hour) | 0x80);
+    } else {
+        out[4] = toBcd(hour);
+    }
+    out[0] = toBcd(lt.tm_year % 100);
+    out[1] = toBcd(lt.tm_mon + 1);
+    out[2] = toBcd(lt.tm_mday);
+    out[3] = toBcd(lt.tm_wday);
+    out[5] = toBcd(lt.tm_min);
+    out[6] = toBcd(lt.tm_sec);
+}
+
+void Bus::rtcBeginCommand() {
+    uint8_t c = rtc.command;
+    if ((c & 0xF0) != 0x60 && (c & 0x0F) == 0x06) {
+        c = reverse8(c);
+    }
+    const int reg = (c >> 1) & 7;
+    const bool reading = c & 1;
+    rtc.byteIndex = 0;
+    rtc.bitIndex = 0;
+    rtc.buffer = 0;
+    switch (reg) {
+        case 0:
+            rtc.status = 0x40;
+            rtc.state = RtcState::Idle;
+            break;
+        case 4:
+            rtc.length = 1;
+            if (reading) rtc.data[0] = rtc.status;
+            rtc.state = reading ? RtcState::Reading : RtcState::Writing;
+            break;
+        case 2:
+            rtc.length = 7;
+            if (reading) rtcFillDateTime(rtc.data);
+            rtc.state = reading ? RtcState::Reading : RtcState::Writing;
+            break;
+        case 6: {
+            rtc.length = 3;
+            if (reading) {
+                uint8_t dt[7];
+                rtcFillDateTime(dt);
+                rtc.data[0] = dt[4];
+                rtc.data[1] = dt[5];
+                rtc.data[2] = dt[6];
+            }
+            rtc.state = reading ? RtcState::Reading : RtcState::Writing;
+            break;
+        }
+        default:
+            rtc.state = RtcState::Idle;
+            break;
+    }
+}
+
+void Bus::rtcClock() {
+    const bool sck = gpioData & 1;
+    const bool sio = (gpioData >> 1) & 1;
+    const bool cs = (gpioData >> 2) & 1;
+
+    if (!cs) {
+        rtc.state = RtcState::Command;
+        rtc.bits = 0;
+        rtc.command = 0;
+        rtc.prevSck = sck;
+        rtc.prevCs = cs;
+        return;
+    }
+    if (cs && !rtc.prevCs) {
+        rtc.state = RtcState::Command;
+        rtc.bits = 0;
+        rtc.command = 0;
+    }
+    const bool rising = sck && !rtc.prevSck;
+    const bool falling = !sck && rtc.prevSck;
+    rtc.prevSck = sck;
+    rtc.prevCs = cs;
+
+    if (rtc.state == RtcState::Command) {
+        if (rising) {
+            rtc.command = static_cast<uint8_t>((rtc.command << 1) | (sio ? 1 : 0));
+            if (++rtc.bits == 8) {
+                rtcBeginCommand();
+            }
+        }
+    } else if (rtc.state == RtcState::Reading) {
+        if (falling) {
+            const int bit = (rtc.data[rtc.byteIndex] >> rtc.bitIndex) & 1;
+            gpioData = static_cast<uint8_t>((gpioData & ~0x2u) | (bit << 1));
+            if (++rtc.bitIndex == 8) {
+                rtc.bitIndex = 0;
+                if (++rtc.byteIndex >= rtc.length) {
+                    rtc.state = RtcState::Idle;
+                }
+            }
+        }
+    } else if (rtc.state == RtcState::Writing) {
+        if (rising) {
+            rtc.buffer = static_cast<uint8_t>(rtc.buffer | ((sio ? 1 : 0) << rtc.bitIndex));
+            if (++rtc.bitIndex == 8) {
+                rtc.data[rtc.byteIndex] = rtc.buffer;
+                rtc.buffer = 0;
+                rtc.bitIndex = 0;
+                if (++rtc.byteIndex >= rtc.length) {
+                    if (rtc.length == 1) {
+                        rtc.status = rtc.data[0];
+                    }
+                    rtc.state = RtcState::Idle;
+                }
+            }
+        }
+    }
 }

@@ -84,6 +84,7 @@ private:
 
     bool masterEnabled() const;
     void trigger(int channel);
+    void swapWaveBank();
     void popFifo(int fifo);
     void advanceClocks(int cycles);
     void clockFrameSequencer();
@@ -101,6 +102,10 @@ private:
     WaveChannel wave;
     NoiseChannel noise;
     Fifo fifos[2];
+
+    uint8_t waveAltBank[16] = {};
+    int wavePlayBank = 0;
+    bool waveDimension = false;
     int sampleAcc = 0;
     int frameAcc = 0;
     int frameStep = 0;

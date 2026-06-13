@@ -30,7 +30,8 @@ jobs:
             libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev \
             libxss-dev libwayland-dev wayland-protocols libxkbcommon-dev \
             libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev \
-            libasound2-dev libpulse-dev libdbus-1-dev libudev-dev
+            libasound2-dev libpulse-dev libdbus-1-dev libudev-dev \
+            fuse libfuse2
 
       # Cache the compiled SDL2 (FetchContent _deps) to avoid rebuilding it
       # from source on every run.
@@ -46,18 +47,57 @@ jobs:
       - name: Build
         run: cmake --build build --config Release -j
 
-      - name: Package
+      # Run the unit/regression suite as a release gate.
+      - name: Test
+        if: runner.os != 'Windows'
+        run: ./build/gba_test_harness
+      - name: Test (Windows)
+        if: runner.os == 'Windows'
+        run: ./build/Release/gba_test_harness.exe
+
+      # --- Packaging: one user-friendly artifact per OS --------------------
+      - name: Package macOS (.dmg)
+        if: runner.os == 'macOS'
         working-directory: build
-        run: cpack -C Release
+        run: |
+          cpack -C Release -G DragNDrop
+          mkdir -p ../dist
+          mv *.dmg "../dist/GBA-Emu-macOS.dmg"
+
+      - name: Package Windows (.exe)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          mkdir -p dist
+          # The SDL2 build is fully static, so this is a single, portable exe.
+          cp build/Release/gba_emu.exe "dist/GBA-Emu-Windows-x64.exe"
+
+      - name: Package Linux (AppImage)
+        if: runner.os == 'Linux'
+        run: |
+          DESTDIR="$PWD/AppDir" cmake --install build --prefix /usr
+          curl -fsSL -o linuxdeploy.AppImage \
+            https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          curl -fsSL -o linuxdeploy-plugin-appimage.AppImage \
+            https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/continuous/linuxdeploy-plugin-appimage-x86_64.AppImage
+          chmod +x linuxdeploy*.AppImage
+          # GitHub runners have no FUSE for nested AppImages; extract-and-run.
+          export APPIMAGE_EXTRACT_AND_RUN=1
+          export PATH="$PWD:$PATH"
+          export OUTPUT="GBA-Emu-x86_64.AppImage"
+          ./linuxdeploy.AppImage \
+            --appdir AppDir \
+            --output appimage \
+            -d AppDir/usr/share/applications/gba_emu.desktop \
+            -i AppDir/usr/share/icons/hicolor/256x256/apps/gba_emu.png
+          mkdir -p dist
+          mv GBA-Emu-x86_64.AppImage dist/
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: gba_emu-${{ matrix.name }}
-          path: |
-            build/*.dmg
-            build/*.zip
-            build/*.tar.gz
+          path: dist/*
           if-no-files-found: error
 
   release:
@@ -76,3 +116,4 @@ jobs:
         with:
           files: dist/**/*
           generate_release_notes: true
+          fail_on_unmatched_files: true

@@ -5,6 +5,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -54,12 +55,71 @@ bool versionNewer(const std::string& a, const std::string& b) {
     return false;
 }
 
+std::string jsonField(const std::string& json, const char* key) {
+    const std::string pat = std::string("\"") + key + "\"";
+    size_t p = json.find(pat);
+    if (p == std::string::npos) return "";
+    p = json.find(':', p + pat.size());
+    if (p == std::string::npos) return "";
+    p = json.find('"', p);
+    if (p == std::string::npos) return "";
+    std::string out;
+    for (++p; p < json.size() && json[p] != '"'; ++p) {
+        if (json[p] == '\\' && p + 1 < json.size()) {
+            switch (json[++p]) {
+                case 'n': out += '\n'; break;
+                case 'r': break;
+                case 't': out += '\t'; break;
+                default:  out += json[p]; break;
+            }
+        } else {
+            out += json[p];
+        }
+    }
+    return out;
+}
+
 bool queryLatestRelease(std::string& version, std::string& notes,
                         std::string& url) {
-    (void)version;
-    (void)notes;
     url = RELEASE_URL;
-    return false;
+    const char* cmd =
+        "curl -fsSL --max-time 6 "
+        "-H \"Accept: application/vnd.github+json\" "
+        "https://api.github.com/repos/ginnfx/GBAplus/releases/latest";
+#if defined(_WIN32)
+    std::FILE* pipe = _popen(cmd, "r");
+#else
+    std::FILE* pipe = popen(cmd, "r");
+#endif
+    if (pipe == nullptr) {
+        return false;
+    }
+    std::string json;
+    std::array<char, 4096> buf{};
+    size_t n;
+    while ((n = std::fread(buf.data(), 1, buf.size(), pipe)) > 0) {
+        json.append(buf.data(), n);
+    }
+#if defined(_WIN32)
+    _pclose(pipe);
+#else
+    pclose(pipe);
+#endif
+
+    std::string tag = jsonField(json, "tag_name");
+    if (tag.empty()) {
+        return false;
+    }
+    if (tag[0] == 'v' || tag[0] == 'V') {
+        tag.erase(0, 1);
+    }
+    version = tag;
+    notes = jsonField(json, "body");
+    const std::string page = jsonField(json, "html_url");
+    if (!page.empty()) {
+        url = page;
+    }
+    return true;
 }
 
 std::string deriveSavPath(const std::string& romPath) {

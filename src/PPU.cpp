@@ -111,10 +111,9 @@ void PPU::renderScanline(int line) {
             renderTiledLine(line, 0x0, 0xC);
             break;
         case 3:
-            renderMode3(line);
-            break;
         case 4:
-            renderMode4(line);
+        case 5:
+            renderBitmapLine(line, mode);
             break;
         default:
             TRACE_LOG("renderScanline: unimplemented video mode %u", mode);
@@ -125,35 +124,50 @@ void PPU::renderScanline(int line) {
     }
 }
 
-void PPU::renderMode3(int line) {
-    for (int x = 0; x < SCREEN_WIDTH; ++x) {
-        const uint32_t addr =
-            VRAM_BASE + static_cast<uint32_t>(line * SCREEN_WIDTH + x) * 2;
-        fb[line * SCREEN_WIDTH + x] = bgr555ToRGBA(bus.read16(addr));
-    }
-}
-
-void PPU::renderMode4(int line) {
+void PPU::renderBitmapLine(int line, int mode) {
+    (void)line;
     const uint16_t dispcnt = bus.read16(REG_DISPCNT);
-    const uint32_t page = (dispcnt & (1u << 4)) ? 0xA000u : 0u;
+    const bool bg2on = dispcnt & (1u << 10);
     const uint16_t bg2cnt = bus.read16(REG_BG0CNT + 4);
     const int bgPriority = bg2cnt & 3;
-    const bool bg2on = dispcnt & (1u << 10);
+
+    const int bmpW = (mode == 5) ? 160 : 240;
+    const int bmpH = (mode == 5) ? 128 : 160;
+    const bool paletted = (mode == 4);
+    const uint32_t page =
+        (mode != 3 && (dispcnt & (1u << 4))) ? 0xA000u : 0u;
+
+    const int32_t pa = static_cast<int16_t>(bus.read16(REG_BG2PA));
+    const int32_t pc = static_cast<int16_t>(bus.read16(REG_BG2PA + 4));
+    int32_t cx = affineX[0];
+    int32_t cy = affineY[0];
 
     uint32_t colors[SCREEN_WIDTH];
     int priorities[SCREEN_WIDTH];
     const uint32_t backdrop = paletteColor(0);
-    for (int x = 0; x < SCREEN_WIDTH; ++x) {
+    for (int x = 0; x < SCREEN_WIDTH; ++x, cx += pa, cy += pc) {
         colors[x] = backdrop;
         priorities[x] = PRIORITY_BACKDROP;
-        if (bg2on) {
+        if (!bg2on) {
+            continue;
+        }
+        const int tx = cx >> 8;
+        const int ty = cy >> 8;
+        if (tx < 0 || ty < 0 || tx >= bmpW || ty >= bmpH) {
+            continue;
+        }
+        if (paletted) {
             const uint8_t index = bus.read8(
-                VRAM_BASE + page +
-                static_cast<uint32_t>(line * SCREEN_WIDTH + x));
+                VRAM_BASE + page + static_cast<uint32_t>(ty * bmpW + tx));
             if (index != 0) {
                 colors[x] = paletteColor(index);
                 priorities[x] = bgPriority;
             }
+        } else {
+            const uint32_t addr = VRAM_BASE + page +
+                static_cast<uint32_t>(ty * bmpW + tx) * 2;
+            colors[x] = bgr555ToRGBA(bus.read16(addr));
+            priorities[x] = bgPriority;
         }
     }
 
@@ -487,6 +501,9 @@ void PPU::renderSpritesLine(int line, uint16_t* objColor, uint8_t* objPrio,
 
         const bool is8bpp = attr0 & 0x2000;
         const uint32_t baseTile = attr2 & 0x3FF;
+        if ((bus.read16(REG_DISPCNT) & 0x7) >= 3 && baseTile < 512) {
+            continue;
+        }
         const int priority = (attr2 >> 10) & 3;
         const uint32_t palBank = attr2 >> 12;
         const bool hflip = !affine && (attr1 & 0x1000);

@@ -36,8 +36,7 @@ public:
 
 private:
     void renderScanline(int line);
-    void renderMode3(int line);
-    void renderMode4(int line);
+    void renderBitmapLine(int line, int mode);
     void renderTiledLine(int line, unsigned textMask, unsigned affineMask);
     void renderBackgroundLine(int bg, int line, uint16_t* out);
     void renderAffineLine(int bg, uint16_t* out);
