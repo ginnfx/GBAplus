@@ -1055,7 +1055,10 @@ void ARM7TDMI::thumbLoadStoreReg(uint16_t opcode) {
         switch (op) {
             case 0: bus.write32(addr, regs[rd]); break;                 // STR
             case 1: bus.write8(addr, static_cast<uint8_t>(regs[rd])); break;
-            case 2: regs[rd] = bus.read32(addr); break;                 // LDR
+            case 2:  // LDR: an unaligned word load rotates like ARM (hardware)
+                regs[rd] = std::rotr(bus.read32(addr),
+                                     static_cast<int>((addr & 3) * 8));
+                break;
             case 3: regs[rd] = bus.read8(addr); break;                  // LDRB
         }
     }
@@ -1078,7 +1081,8 @@ void ARM7TDMI::thumbLoadStoreImm(uint16_t opcode) {
     } else {
         const uint32_t addr = regs[rb] + offset * 4;
         if (load) {
-            regs[rd] = bus.read32(addr);
+            regs[rd] = std::rotr(bus.read32(addr),
+                                 static_cast<int>((addr & 3) * 8));
         } else {
             bus.write32(addr, regs[rd]);
         }
@@ -1103,7 +1107,8 @@ void ARM7TDMI::thumbLoadStoreSP(uint16_t opcode) {
     const uint32_t rd = (opcode >> 8) & 7;
     const uint32_t addr = regs[13] + (opcode & 0xFF) * 4;
     if (load) {
-        regs[rd] = bus.read32(addr);
+        regs[rd] = std::rotr(bus.read32(addr),
+                             static_cast<int>((addr & 3) * 8));
     } else {
         bus.write32(addr, regs[rd]);
     }

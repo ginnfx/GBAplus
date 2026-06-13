@@ -211,6 +211,39 @@ void testThumbMemory(Bus& bus) {
           "STR hit memory (got 0x%X)", bus.read32(0x02000700));
 }
 
+// A Thumb LDR from a non-word-aligned address must rotate the aligned word
+// right by the byte offset, exactly like ARM. FireRed's palette-fade loop
+// loads 16-bit colours with `ldr` from halfword-aligned addresses and reads
+// the low halfword; without the rotation, odd entries read the wrong colour
+// (every faded colour duplicated, corrupting 4bpp images).
+void testThumbUnalignedLoad(Bus& bus) {
+    std::printf("Test: Thumb unaligned word load rotation\n");
+    ARM7TDMI cpu(bus);
+    cpu.reset();
+
+    bus.write32(0x02000700, 0xAABBCCDD);  // word to be read unaligned
+
+    const uint32_t base = 0x02000600;
+    bus.write16(base + 0x0, 0x4902);      // LDR r1, [pc, #8]  -> 0x02000702
+    bus.write16(base + 0x2, 0x680A);      // LDR r2, [r1]      (addr & 2)
+    bus.write16(base + 0x4, 0xE7FE);      // B .
+    bus.write32(base + 0xC, 0x02000702);  // literal: halfword-aligned address
+
+    cpu.setCPSR(cpu.getCPSR() | ARM7TDMI::BIT_T);
+    cpu.setReg(15, base);
+    for (int i = 0; i < 3; ++i) {
+        cpu.step();
+    }
+
+    // rotr(0xAABBCCDD, 16) == 0xCCDDAABB; the low halfword is 0xAABB, the
+    // actual halfword stored at 0x02000702.
+    CHECK(cpu.reg(2) == 0xCCDDAABB,
+          "unaligned LDR rotated (got 0x%08X, want 0xCCDDAABB)", cpu.reg(2));
+    CHECK((cpu.reg(2) & 0xFFFF) == 0xAABB,
+          "low halfword is the one at 0x702 (got 0x%04X)",
+          cpu.reg(2) & 0xFFFF);
+}
+
 // Immediate DMA3 transfer: EWRAM -> EWRAM, 4 words.
 void testDMAImmediate(Bus& bus) {
     std::printf("Test: immediate DMA transfer\n");
@@ -1616,6 +1649,10 @@ int main() {
     {
         Bus bus;
         testThumbMemory(bus);
+    }
+    {
+        Bus bus;
+        testThumbUnalignedLoad(bus);
     }
     {
         Bus bus;
