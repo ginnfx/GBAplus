@@ -1611,6 +1611,7 @@ void testFlashProgramAnd(Bus& bus) {
 }
 
 int main() {
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
     {
         Bus bus;
         testDataProcessingLoop(bus);
