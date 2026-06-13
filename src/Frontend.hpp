@@ -103,6 +103,7 @@ private:
     std::string updateVersion;
     std::string updateNotes;
     std::string updateUrl;
+    std::string updateAssetUrl;
 
     std::unique_ptr<Emulator> emu;
     std::FILE* traceFile = nullptr;

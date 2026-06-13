@@ -6,11 +6,21 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <string>
 #include <utility>
 #include <vector>
+
+#if defined(_WIN32)
+#  include <windows.h>
+#elif defined(__APPLE__)
+#  include <mach-o/dyld.h>
+#  include <unistd.h>
+#else
+#  include <unistd.h>
+#endif
 
 #include "imgui.h"
 #include "imgui_impl_sdl2.h"
@@ -80,7 +90,7 @@ std::string jsonField(const std::string& json, const char* key) {
 }
 
 bool queryLatestRelease(std::string& version, std::string& notes,
-                        std::string& url) {
+                        std::string& url, std::string& assetUrl) {
     url = RELEASE_URL;
     const char* cmd =
         "curl -fsSL --max-time 6 "
@@ -119,6 +129,27 @@ bool queryLatestRelease(std::string& version, std::string& notes,
     if (!page.empty()) {
         url = page;
     }
+
+#if defined(_WIN32)
+    const char* suffix = ".exe\"";
+#elif defined(__APPLE__)
+    const char* suffix = ".dmg\"";
+#else
+    const char* suffix = ".AppImage\"";
+#endif
+    const size_t ap = json.find(suffix);
+    if (ap != std::string::npos) {
+        const size_t bp = json.find("\"browser_download_url\"", ap);
+        if (bp != std::string::npos) {
+            const size_t q = json.find('"', json.find(':', bp));
+            const size_t e = q == std::string::npos
+                                 ? std::string::npos
+                                 : json.find('"', q + 1);
+            if (e != std::string::npos) {
+                assetUrl = json.substr(q + 1, e - q - 1);
+            }
+        }
+    }
     return true;
 }
 
@@ -130,6 +161,103 @@ std::string deriveSavPath(const std::string& romPath) {
         return romPath.substr(0, dot) + ".sav";
     }
     return romPath + ".sav";
+}
+
+std::string currentExePath() {
+#if defined(_WIN32)
+    char buf[MAX_PATH];
+    const DWORD n = GetModuleFileNameA(nullptr, buf, sizeof(buf));
+    return n > 0 ? std::string(buf, n) : std::string();
+#elif defined(__APPLE__)
+    char buf[4096];
+    uint32_t sz = sizeof(buf);
+    if (_NSGetExecutablePath(buf, &sz) != 0) return "";
+    return buf;
+#else
+    char buf[4096];
+    const ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (n <= 0) return "";
+    buf[n] = '\0';
+    return buf;
+#endif
+}
+
+bool launchUpdater(const std::string& assetUrl) {
+    if (assetUrl.empty()) return false;
+    namespace fs = std::filesystem;
+
+#if defined(__APPLE__)
+    const std::string exe = currentExePath();
+    const size_t appPos = exe.rfind(".app/");
+    if (appPos == std::string::npos) return false;
+    const std::string bundle = exe.substr(0, appPos + 4);
+    const std::string script = (fs::temp_directory_path() / "gba_emu_update.sh").string();
+    std::ofstream f(script);
+    if (!f) return false;
+    f << "#!/bin/sh\n"
+      << "while kill -0 " << getpid() << " 2>/dev/null; do sleep 0.3; done\n"
+      << "DL=\"$(mktemp -t gbaupd)\"\n"
+      << "if curl -fsSL -o \"$DL\" '" << assetUrl << "'; then\n"
+      << "  MNT=\"$(mktemp -d)\"\n"
+      << "  if hdiutil attach -nobrowse -quiet -mountpoint \"$MNT\" \"$DL\"; then\n"
+      << "    APP=\"$(ls -d \"$MNT\"/*.app 2>/dev/null | head -1)\"\n"
+      << "    if [ -n \"$APP\" ] && cp -R \"$APP\" \"" << bundle << ".new\"; then\n"
+      << "      xattr -dr com.apple.quarantine \"" << bundle << ".new\" 2>/dev/null\n"
+      << "      rm -rf \"" << bundle << ".old\"\n"
+      << "      mv \"" << bundle << "\" \"" << bundle << ".old\" &&"
+         " mv \"" << bundle << ".new\" \"" << bundle << "\" &&"
+         " rm -rf \"" << bundle << ".old\" ||"
+         " mv \"" << bundle << ".old\" \"" << bundle << "\"\n"
+      << "    fi\n"
+      << "    hdiutil detach \"$MNT\" -quiet 2>/dev/null\n"
+      << "  fi\n"
+      << "  rm -f \"$DL\"\n"
+      << "fi\n"
+      << "open \"" << bundle << "\"\n";
+    f.close();
+    return std::system(("nohup sh '" + script + "' >/dev/null 2>&1 &").c_str()) == 0;
+
+#elif defined(__linux__)
+    const char* appimg = std::getenv("APPIMAGE");
+    if (appimg == nullptr) return false;
+    const std::string script = (fs::temp_directory_path() / "gba_emu_update.sh").string();
+    std::ofstream f(script);
+    if (!f) return false;
+    f << "#!/bin/sh\n"
+      << "while kill -0 " << getpid() << " 2>/dev/null; do sleep 0.3; done\n"
+      << "DL=\"$(mktemp)\"\n"
+      << "if curl -fsSL -o \"$DL\" '" << assetUrl << "'; then\n"
+      << "  chmod +x \"$DL\"\n"
+      << "  mv -f \"$DL\" \"" << appimg << "\"\n"
+      << "fi\n"
+      << "chmod +x \"" << appimg << "\"\n"
+      << "\"" << appimg << "\" >/dev/null 2>&1 &\n";
+    f.close();
+    return std::system(("nohup sh '" + script + "' >/dev/null 2>&1 &").c_str()) == 0;
+
+#elif defined(_WIN32)
+    const std::string exe = currentExePath();
+    if (exe.empty()) return false;
+    const std::string bat = (fs::temp_directory_path() / "gba_emu_update.bat").string();
+    std::ofstream f(bat);
+    if (!f) return false;
+    const unsigned long pid = GetCurrentProcessId();
+    f << "@echo off\r\n"
+      << ":wait\r\n"
+      << "tasklist /FI \"PID eq " << pid << "\" 2>nul | find \"" << pid
+      << "\" >nul && (ping -n 2 127.0.0.1 >nul & goto wait)\r\n"
+      << "curl -fsSL -o \"" << exe << ".new\" \"" << assetUrl << "\"\r\n"
+      << "if exist \"" << exe << ".new\" move /Y \"" << exe << ".new\" \""
+      << exe << "\" >nul\r\n"
+      << "start \"\" \"" << exe << "\"\r\n"
+      << "del \"%~f0\"\r\n";
+    f.close();
+    return std::system(("start \"\" /b cmd /c \"" + bat + "\"").c_str()) == 0;
+
+#else
+    (void)assetUrl;
+    return false;
+#endif
 }
 }
 
@@ -983,12 +1111,13 @@ void Frontend::drawSaveStatePrompt() {
 }
 
 void Frontend::checkForUpdates() {
-    std::string version, notes, url;
-    if (queryLatestRelease(version, notes, url) &&
+    std::string version, notes, url, assetUrl;
+    if (queryLatestRelease(version, notes, url, assetUrl) &&
         versionNewer(CURRENT_VERSION, version)) {
         updateVersion = version;
         updateNotes = notes;
         updateUrl = url;
+        updateAssetUrl = assetUrl;
         showUpdateWindow = true;
     } else {
         setStatus("You're up to date (v" + std::string(CURRENT_VERSION) + ")");
@@ -1016,8 +1145,18 @@ void Frontend::drawUpdateWindow() {
     ImGui::TextWrapped("%s", updateNotes.c_str());
     ImGui::Separator();
     if (ImGui::Button("Update now", ImVec2(130.0f, 0.0f))) {
+        if (launchUpdater(updateAssetUrl)) {
+            setStatus("Downloading update; the app will relaunch...");
+            showUpdateWindow = false;
+            running = false;
+        } else {
+            SDL_OpenURL(updateUrl.c_str());
+            showUpdateWindow = false;
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("View page", ImVec2(110.0f, 0.0f))) {
         SDL_OpenURL(updateUrl.c_str());
-        showUpdateWindow = false;
     }
     ImGui::SameLine();
     if (ImGui::Button("Remind me later", ImVec2(130.0f, 0.0f))) {
