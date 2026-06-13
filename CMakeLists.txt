@@ -129,7 +129,9 @@ target_link_libraries(gba_diag PRIVATE gba_core)
 
 foreach(target gba_core gba_emu gba_test_harness)
     if(MSVC)
-        target_compile_options(${target} PRIVATE /W4)
+        # /Zc:preprocessor selects the standards-conformant preprocessor, which
+        # MSVC needs for the C++20 __VA_OPT__ used in the test harness's macros.
+        target_compile_options(${target} PRIVATE /W4 /Zc:preprocessor)
     else()
         target_compile_options(${target} PRIVATE -Wall -Wextra)
     endif()
