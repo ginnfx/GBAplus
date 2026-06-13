@@ -21,6 +21,16 @@ Bus::Bus() {
     // KEYINPUT is active low: all buttons released at power-on.
     io[IO_KEYINPUT] = 0xFF;
     io[IO_KEYINPUT + 1] = 0x03;
+    // The affine background matrices power on as the identity (PA = PD =
+    // 1.0 in 8.8 fixed point). Games display affine layers without ever
+    // writing these registers and rely on that state; a zero matrix would
+    // collapse the whole layer to its (0,0) texel.
+    io[0x020] = 0x00; io[0x021] = 0x01;  // BG2PA
+    io[0x026] = 0x00; io[0x027] = 0x01;  // BG2PD
+    io[0x030] = 0x00; io[0x031] = 0x01;  // BG3PA
+    io[0x036] = 0x00; io[0x037] = 0x01;  // BG3PD
+    // SOUNDBIAS mid-level bias, as left by the BIOS.
+    io[0x088] = 0x00; io[0x089] = 0x02;
     backupMem.assign(SRAM_SIZE, 0);
 }
 
