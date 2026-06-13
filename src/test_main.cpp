@@ -1781,6 +1781,9 @@ void testFlashProgramAnd(Bus& bus) {
 }
 
 int main() {
+    // Unbuffered stdout so a crashing test still shows its progress in CI logs
+    // (block-buffered output to a pipe is otherwise lost when a test aborts).
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
     {
         Bus bus;
         testDataProcessingLoop(bus);
