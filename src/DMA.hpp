@@ -3,6 +3,8 @@
 #include <cstdint>
 
 class Bus;
+class Serializer;
+class Deserializer;
 
 // The four DMA channels. Register block per channel n at 0x040000B0 + n*12:
 //   +0x0  DMAnSAD    source address (32-bit)
@@ -28,6 +30,11 @@ public:
     // to the requesting FIFO, ignoring the word count and keeping the
     // destination fixed.
     void onFifoRequest(int fifo);
+
+    // Save-state support: snapshots/restores the four channels' active flags
+    // and internal source/destination latches.
+    void serialize(Serializer& s) const;
+    void deserialize(Deserializer& d);
 
 private:
     // Control register bits.

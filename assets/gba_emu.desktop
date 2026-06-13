@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=GBA Emu
+Comment=A Game Boy Advance emulator
+Exec=gba_emu %f
+Icon=gba_emu
+Terminal=false
+Categories=Game;Emulator;

@@ -5,6 +5,8 @@
 #include <cstdio>
 
 class Bus;
+class Serializer;
+class Deserializer;
 
 // ARM7TDMI core. Talks to the rest of the system exclusively through the Bus.
 class ARM7TDMI {
@@ -65,6 +67,11 @@ public:
     // When set, each step() writes "PC=... CPSR=... R0=... R15=..." to the
     // file before executing, for diffing against reference emulators.
     void setTraceFile(std::FILE* file) { traceFile = file; }
+
+    // Save-state support: snapshots/restores the full register file (active +
+    // banked), CPSR/SPSR banks, the pipeline, and halt/IntrWait state.
+    void serialize(Serializer& s) const;
+    void deserialize(Deserializer& d);
 
 private:
     // Banked register storage indices. User and System share a bank.

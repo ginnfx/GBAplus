@@ -5,6 +5,8 @@
 #include <vector>
 
 class Bus;
+class Serializer;
+class Deserializer;
 
 // GBA APU: the four GB-style PSG channels (square 1 with sweep, square 2,
 // programmable wave, noise) plus the two Direct Sound FIFO channels that are
@@ -35,6 +37,12 @@ public:
 
     size_t pendingFrames() const { return sampleBuffer.size() / 2; }
     size_t drainSamples(int16_t* out, size_t maxFrames);
+
+    // Save-state support: snapshots/restores the PSG/FIFO channel state and
+    // the frame-sequencer clocks (the pending sample buffer is transient and
+    // cleared on restore).
+    void serialize(Serializer& s) const;
+    void deserialize(Deserializer& d);
 
     // Test hook: number of bytes queued in FIFO A (0) or B (1).
     int fifoCount(int fifo) const { return fifos[fifo].count; }

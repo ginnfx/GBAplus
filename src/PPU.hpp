@@ -4,6 +4,8 @@
 #include <cstdint>
 
 class Bus;
+class Serializer;
+class Deserializer;
 
 // Pixel processing unit. Reads VRAM and the LCD IO registers through the
 // Bus and renders into an internal RGBA framebuffer.
@@ -36,6 +38,11 @@ public:
 
     // Expands 15-bit BGR (0BBBBBGGGGGRRRRR) to 32-bit RGBA (0xRRGGBBAA).
     static uint32_t bgr555ToRGBA(uint16_t color);
+
+    // Save-state support: snapshots/restores the scanline timing position and
+    // the affine reference accumulators (the framebuffer regenerates).
+    void serialize(Serializer& s) const;
+    void deserialize(Deserializer& d);
 
 private:
     void renderScanline(int line);

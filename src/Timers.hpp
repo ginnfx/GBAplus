@@ -3,6 +3,8 @@
 #include <cstdint>
 
 class Bus;
+class Serializer;
+class Deserializer;
 
 // The four hardware timers. Register block per timer n at 0x04000100 + n*4:
 //   +0  TMnCNT_L  reading returns the live counter; writing sets the reload
@@ -21,6 +23,11 @@ public:
 
     // Advances all running timers by the given number of CPU cycles.
     void step(int cycles);
+
+    // Save-state support: snapshots/restores the four timers' control and
+    // counter state.
+    void serialize(Serializer& s) const;
+    void deserialize(Deserializer& d);
 
 private:
     struct Timer {

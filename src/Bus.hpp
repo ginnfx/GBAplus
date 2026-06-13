@@ -8,6 +8,8 @@
 class APU;
 class DMA;
 class Timers;
+class Serializer;
+class Deserializer;
 
 // Central memory bus. All components (CPU, PPU, DMA, ...) talk to each
 // other exclusively through this class — they never reference each other
@@ -93,6 +95,15 @@ public:
     // CPU-side writes to REG_IF go through write8/16 and acknowledge
     // (clear) bits instead.
     void requestInterrupt(uint16_t mask);
+
+    // Save-state support: snapshots/restores all mutable memory and backup
+    // state (but not the ROM/BIOS, which are reloaded from disk).
+    void serialize(Serializer& s) const;
+    void deserialize(Deserializer& d);
+
+    // Cheap identity hash over the ROM header, used to reject save states
+    // taken from a different cartridge.
+    uint32_t romHash() const;
 
 private:
     static constexpr size_t BIOS_SIZE    = 0x4000;
