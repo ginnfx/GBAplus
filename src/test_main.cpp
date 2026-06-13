@@ -5,6 +5,7 @@
 #include <string>
 
 #include <cstdint>
+#include <filesystem>
 #include <vector>
 
 #include "APU.hpp"
@@ -29,6 +30,12 @@ int failures = 0;
             ++failures;                                                  \
         }                                                                \
     } while (0)
+
+// Portable scratch path for the file-backed backup tests (/tmp does not exist
+// on Windows).
+std::string tempFile(const char* name) {
+    return (std::filesystem::temp_directory_path() / name).string();
+}
 
 // MOV/ADD/CMP/BNE counting loop: increments r0 until it reaches 5.
 void testDataProcessingLoop(Bus& bus) {
@@ -974,7 +981,7 @@ void testSRAMPersistence(Bus& bus) {
     CHECK(bus.read8(0x0E000123) == 0xCD, "SRAM readback (got 0x%02X)",
           bus.read8(0x0E000123));
 
-    const std::string savPath = "/tmp/gba_emu_test.sav";
+    const std::string savPath = tempFile("gba_emu_test.sav");
     CHECK(bus.saveCartridgeData(savPath), "saved to %s", savPath.c_str());
 
     Bus fresh;
@@ -991,7 +998,7 @@ void testFlashBackup(Bus& bus) {
     std::printf("Test: Flash backup\n");
 
     // Minimal ROM carrying the FLASH1M_V ID string.
-    const std::string romPath = "/tmp/gba_emu_flash_test.gba";
+    const std::string romPath = tempFile("gba_emu_flash_test.gba");
     {
         std::FILE* f = std::fopen(romPath.c_str(), "wb");
         const char pad[16] = {};
@@ -1046,7 +1053,7 @@ void testFlashBackup(Bus& bus) {
 void testEEPROMBackup(Bus& bus) {
     std::printf("Test: EEPROM backup\n");
 
-    const std::string romPath = "/tmp/gba_emu_eeprom_test.gba";
+    const std::string romPath = tempFile("gba_emu_eeprom_test.gba");
     {
         std::FILE* f = std::fopen(romPath.c_str(), "wb");
         const char pad[16] = {};
@@ -1750,7 +1757,7 @@ void testSerialStub(Bus& bus) {
 // erase ANDs the new value into it (an overwrite would have given 0x0F).
 void testFlashProgramAnd(Bus& bus) {
     std::printf("Test: flash program bit-AND\n");
-    const std::string romPath = "/tmp/gba_emu_flash_and_test.gba";
+    const std::string romPath = tempFile("gba_emu_flash_and_test.gba");
     {
         std::FILE* f = std::fopen(romPath.c_str(), "wb");
         const char pad[16] = {};
