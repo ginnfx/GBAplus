@@ -122,7 +122,8 @@ private:
     bool showUpdateWindow = false;
     std::string updateVersion;         // newer release version (when available)
     std::string updateNotes;           // its release notes
-    std::string updateUrl;             // where "Update now" sends the user
+    std::string updateUrl;             // release page (browser fallback)
+    std::string updateAssetUrl;        // direct download for in-app auto-update
 
     std::unique_ptr<Emulator> emu;
     std::FILE* traceFile = nullptr;
