@@ -124,9 +124,8 @@ For accuracy work, `--trace` writes `emu_trace.log` and
 as mGBA.
 
 ## Current state
-Most games unlikely to boot. However some appear to work if given time/skipping logos (AOS)
-Visual artifacts also are VERY common. Stuff like green flashes or weird artifacting for example. In
-games that boot, like Aria of Sorrow, most dialogue boxes or enviroment textures won't render ;-; 
+Most games boot. However some appear to work if given time/skipping logos (AOS)
+Visual artifacts also are rare. Stuff like green flashes or weird artifacting for example. 
 
 ## Accuracy notes
  Instruction timing is currently approximated (a flat cost per instruction
