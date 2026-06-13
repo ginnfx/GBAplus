@@ -31,6 +31,17 @@ int main(int argc, char* argv[]) {
     }
     const int frames = argc > 2 ? std::atoi(argv[2]) : 1200;
 
+    int dumpEvery = 0;
+    int inspectFrame = -1;
+    for (int i = 3; i < argc - 1; ++i) {
+        if (std::strcmp(argv[i], "--dump-every") == 0) {
+            dumpEvery = std::atoi(argv[i + 1]);
+        }
+        if (std::strcmp(argv[i], "--inspect") == 0) {
+            inspectFrame = std::atoi(argv[i + 1]);
+        }
+    }
+
     Bus bus;
     ARM7TDMI cpu(bus);
     PPU ppu(bus);
@@ -111,6 +122,71 @@ int main(int argc, char* argv[]) {
                         lastDmaCtrl[ch] = ctrl;
                     }
                 }
+            }
+        }
+
+        if (frame == inspectFrame) {
+            std::printf("=== INSPECT frame %d ===\n", frame);
+            const uint16_t dispcnt = bus.read16(0x04000000);
+            std::printf("DISPCNT=%04X mode=%s OBJ1D=%d\n", dispcnt,
+                        modeName(dispcnt), (dispcnt >> 6) & 1);
+            std::printf("BLDCNT=%04X BLDALPHA=%04X BLDY=%04X MOSAIC=%04X\n",
+                        bus.read16(0x04000050), bus.read16(0x04000052),
+                        bus.read16(0x04000054), bus.read16(0x0400004C));
+            for (int o = 0; o < 128; ++o) {
+                const uint32_t e = 0x07000000 + o * 8;
+                const uint16_t a0 = bus.read16(e), a1 = bus.read16(e + 2),
+                               a2 = bus.read16(e + 4);
+                const bool affine = a0 & 0x100;
+                const bool dis = !affine && (a0 & 0x200);
+                if (dis || a0 == 0) continue;
+                int y = a0 & 0xFF;
+                int x = a1 & 0x1FF;
+                std::printf(
+                    "OBJ%3d a0=%04X a1=%04X a2=%04X y=%d x=%d aff=%d 8bpp=%d "
+                    "mode=%d shape=%d size=%d tile=%d prio=%d pal=%d "
+                    "param=%d mos=%d\n",
+                    o, a0, a1, a2, y, x, affine, (a0 >> 13) & 1,
+                    (a0 >> 10) & 3, a0 >> 14, a1 >> 14, a2 & 0x3FF,
+                    (a2 >> 10) & 3, a2 >> 12, (a1 >> 9) & 0x1F,
+                    (a0 >> 12) & 1);
+            }
+            for (int bg = 0; bg < 4; ++bg) {
+                const uint16_t c = bus.read16(0x04000008 + bg * 2);
+                std::printf(
+                    "BG%dCNT=%04X prio=%d char=%d screen=%d 8bpp=%d "
+                    "mos=%d size=%d\n",
+                    bg, c, c & 3, (c >> 2) & 3, (c >> 8) & 0x1F,
+                    (c >> 7) & 1, (c >> 6) & 1, (c >> 14) & 3);
+            }
+            std::printf("BG palette (0x05000000), 16 banks of 16:\n");
+            for (int b = 0; b < 16; ++b) {
+                std::printf("  bank%2d:", b);
+                for (int c = 0; c < 16; ++c) {
+                    std::printf(" %04X",
+                                bus.read16(0x05000000 + (b * 16 + c) * 2));
+                }
+                std::printf("\n");
+            }
+            std::printf("OBJ palette (0x05000200), 16 banks of 16:\n");
+            for (int b = 0; b < 16; ++b) {
+                std::printf("  bank%2d:", b);
+                for (int c = 0; c < 16; ++c) {
+                    std::printf(" %04X",
+                                bus.read16(0x05000200 + (b * 16 + c) * 2));
+                }
+                std::printf("\n");
+            }
+        }
+
+        if (dumpEvery > 0 && frame % dumpEvery == 0) {
+            char path[64];
+            std::snprintf(path, sizeof(path), "dump_%05d.raw", frame);
+            FILE* f = std::fopen(path, "wb");
+            if (f) {
+                const auto& fb = ppu.framebuffer();
+                std::fwrite(fb.data(), sizeof(uint32_t), fb.size(), f);
+                std::fclose(f);
             }
         }
 

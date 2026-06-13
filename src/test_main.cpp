@@ -194,6 +194,32 @@ void testThumbMemory(Bus& bus) {
           "STR hit memory (got 0x%X)", bus.read32(0x02000700));
 }
 
+void testThumbUnalignedLoad(Bus& bus) {
+    std::printf("Test: Thumb unaligned word load rotation\n");
+    ARM7TDMI cpu(bus);
+    cpu.reset();
+
+    bus.write32(0x02000700, 0xAABBCCDD);
+
+    const uint32_t base = 0x02000600;
+    bus.write16(base + 0x0, 0x4902);
+    bus.write16(base + 0x2, 0x680A);
+    bus.write16(base + 0x4, 0xE7FE);
+    bus.write32(base + 0xC, 0x02000702);
+
+    cpu.setCPSR(cpu.getCPSR() | ARM7TDMI::BIT_T);
+    cpu.setReg(15, base);
+    for (int i = 0; i < 3; ++i) {
+        cpu.step();
+    }
+
+    CHECK(cpu.reg(2) == 0xCCDDAABB,
+          "unaligned LDR rotated (got 0x%08X, want 0xCCDDAABB)", cpu.reg(2));
+    CHECK((cpu.reg(2) & 0xFFFF) == 0xAABB,
+          "low halfword is the one at 0x702 (got 0x%04X)",
+          cpu.reg(2) & 0xFFFF);
+}
+
 void testDMAImmediate(Bus& bus) {
     std::printf("Test: immediate DMA transfer\n");
     DMA dma(bus);
@@ -1467,6 +1493,10 @@ int main() {
     {
         Bus bus;
         testThumbMemory(bus);
+    }
+    {
+        Bus bus;
+        testThumbUnalignedLoad(bus);
     }
     {
         Bus bus;
