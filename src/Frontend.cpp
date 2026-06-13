@@ -16,6 +16,8 @@
 // Platform headers for resolving the running executable/bundle path so the
 // in-app updater can replace it in place.
 #if defined(_WIN32)
+#  define NOMINMAX             // don't clobber std::min/std::max
+#  define WIN32_LEAN_AND_MEAN  // trim the heavy windows.h surface
 #  include <windows.h>
 #elif defined(__APPLE__)
 #  include <mach-o/dyld.h>
