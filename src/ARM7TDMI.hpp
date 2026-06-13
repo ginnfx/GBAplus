@@ -5,6 +5,8 @@
 #include <cstdio>
 
 class Bus;
+class Serializer;
+class Deserializer;
 
 class ARM7TDMI {
 public:
@@ -52,6 +54,9 @@ public:
     void flushPipeline();
 
     void setTraceFile(std::FILE* file) { traceFile = file; }
+
+    void serialize(Serializer& s) const;
+    void deserialize(Deserializer& d);
 
 private:
     enum BankIndex : int {

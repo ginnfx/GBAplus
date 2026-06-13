@@ -8,6 +8,8 @@
 class APU;
 class DMA;
 class Timers;
+class Serializer;
+class Deserializer;
 
 class Bus {
 public:
@@ -58,6 +60,11 @@ public:
     void requestFifoDMA(int fifo);
 
     void requestInterrupt(uint16_t mask);
+
+    void serialize(Serializer& s) const;
+    void deserialize(Deserializer& d);
+
+    uint32_t romHash() const;
 
 private:
     static constexpr size_t BIOS_SIZE    = 0x4000;

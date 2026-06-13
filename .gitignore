@@ -3,3 +3,6 @@ build/
 *.sav
 *.gba
 .DS_Store
+
+# Downloaded box art (see tools/fetch_covers.py); not redistributed.
+covers/

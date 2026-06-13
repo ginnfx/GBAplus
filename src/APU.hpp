@@ -5,6 +5,8 @@
 #include <vector>
 
 class Bus;
+class Serializer;
+class Deserializer;
 
 class APU {
 public:
@@ -23,6 +25,9 @@ public:
 
     size_t pendingFrames() const { return sampleBuffer.size() / 2; }
     size_t drainSamples(int16_t* out, size_t maxFrames);
+
+    void serialize(Serializer& s) const;
+    void deserialize(Deserializer& d);
 
     int fifoCount(int fifo) const { return fifos[fifo].count; }
 

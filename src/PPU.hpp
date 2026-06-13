@@ -4,6 +4,8 @@
 #include <cstdint>
 
 class Bus;
+class Serializer;
+class Deserializer;
 
 class PPU {
 public:
@@ -28,6 +30,9 @@ public:
     }
 
     static uint32_t bgr555ToRGBA(uint16_t color);
+
+    void serialize(Serializer& s) const;
+    void deserialize(Deserializer& d);
 
 private:
     void renderScanline(int line);

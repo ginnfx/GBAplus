@@ -3,6 +3,8 @@
 #include <cstdint>
 
 class Bus;
+class Serializer;
+class Deserializer;
 
 class DMA {
 public:
@@ -14,6 +16,9 @@ public:
     void onHBlank();
 
     void onFifoRequest(int fifo);
+
+    void serialize(Serializer& s) const;
+    void deserialize(Deserializer& d);
 
 private:
     static constexpr uint16_t CTRL_REPEAT  = 1u << 9;

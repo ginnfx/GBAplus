@@ -4,7 +4,7 @@ A WIP Game Boy Advance emulator written in C++ with SDL2.
 
 GBAplus emulates the ARM7TDMI CPU (both ARM and Thumb instruction sets), the
 tiled and bitmap PPU video modes, 4-channel DMA, hardware timers, and the
-full audio unit. a LOT of ts was done using documentation from GBATEK, ARM7TDMI Technical Reference Manual and mGBA. No GUI yet.
+full audio unit. a LOT of ts was done using documentation from GBATEK, ARM7TDMI Technical Reference Manual and mGBA. It runs as a desktop app (SDL2 + Dear ImGui) with a cover-art game library, save states, and display options.
 
 ## Features
 
@@ -14,9 +14,11 @@ full audio unit. a LOT of ts was done using documentation from GBATEK, ARM7TDMI 
   barrel shifter, single/halfword/signed/block data transfers, multiplies
   (including the 64-bit long forms), MRS/MSR, and BX state switching.
 - **Video** — scanline-accurate timing (1232 cycles/line, 228 lines),
-  Mode 0 tiled backgrounds (all four layers, priorities, scrolling, flips,
-  4bpp/8bpp, all screen sizes), Mode 3 bitmap, and OAM sprites with 1D/2D
-  mapping and per-pixel priority.
+  tiled backgrounds (all four layers, priorities, scrolling, flips,
+  4bpp/8bpp, all screen sizes), affine backgrounds (modes 1/2) and the
+  mode 3/4 bitmaps, OAM sprites with 1D/2D mapping, affine sprites and
+  per-pixel priority, the two windows plus the OBJ window, mosaic, and the
+  colour special effects (alpha blend and brightness fades).
 - **Audio** — square 1 (with frequency sweep), square 2, programmable wave,
   and noise channels with envelopes and length counters, plus both Direct
   Sound FIFOs fed by DMA and clocked by timer overflows. Stereo 16-bit
@@ -26,8 +28,14 @@ full audio unit. a LOT of ts was done using documentation from GBATEK, ARM7TDMI 
   (IE/IF/IME with write-1-to-clear acknowledge), and a high-level emulation
   of the BIOS IRQ dispatch so games run without a BIOS dump (a real BIOS
   image is also supported).
-- **Persistence** — battery-backed SRAM saves written alongside the ROM as
-  a `.sav` file.
+- **Persistence** — battery-backed saves written alongside the ROM as a
+  `.sav` file, covering SRAM, Flash (64/128 KiB), and serial EEPROM. Full
+  save states snapshot the whole machine to numbered slots.
+- **Frontend** — an SDL2 + Dear ImGui desktop app with a cover-art game
+  library that can scan several folders at once, 10 save-state slots (quick
+  save/load plus a prompt to resume from the latest save), display options
+  (fullscreen, VSync, integer scaling, linear filtering), scanline/CRT/LCD
+  overlays, and native UI fonts (SF Pro on macOS, Roboto elsewhere).
 - **Tooling** — a standalone test harness (72 checks covering the CPU, PPU,
   DMA, timers, APU, and interrupt paths) and a per-instruction trace mode
   for diffing execution against other emulators.
@@ -79,15 +87,26 @@ binaries: `gba_emu` (the emulator) and `gba_test_harness` (the test suite).
 
 Save data is read from and written to `game.sav` next to the ROM.
 
+Launching without a ROM opens the library. Use **File > Add Games to
+Library...** to point GBAplus at one or more folders of `.gba` ROMs; box art
+is read from a `covers/` subfolder next to them (run
+`tools/fetch_covers.py <folder>` to download it). Click a cover to play, and
+if the game has save states it offers to resume from the latest one. Display
+overlays live under **Video > Graphics Settings > Shaders**.
+
 ### Controls
 
-| GBA | Key |
+| Action | Key |
 |---|---|
 | D-Pad | W / A / S / D |
 | A / B | K / L |
 | L / R | Q / E |
 | Start | Enter |
 | Select | Backspace |
+| Pause | P |
+| Fast-forward | Tab (hold) |
+| Save / load state | F5 / F8 |
+| Fullscreen | F11 |
 | Quit | Esc |
 
 ## Testing
@@ -110,7 +129,8 @@ Visual artifacts also are VERY common. Stuff like green flashes or weird artifac
 games that boot, like Aria of Sorrow, most dialogue boxes or enviroment textures won't render ;-; 
 
 ## Accuracy notes
- Instruction timing is currently approximated (a flat cost per instruction rather than true
-S/N/I cycle counting), affine backgrounds/sprites and PPU modes 1/2/4/5 are
-not yet implemented, and backup media beyond SRAM (Flash, EEPROM) is still
-to come. Hardware behavior follows the GBATEK documentation.
+ Instruction timing is currently approximated (a flat cost per instruction
+rather than true S/N/I cycle counting), and bitmap mode 5 is not yet
+implemented. Affine backgrounds and sprites, the windows, mosaic, colour
+special effects, and Flash/EEPROM backup are all in. Hardware behavior
+follows the GBATEK documentation.

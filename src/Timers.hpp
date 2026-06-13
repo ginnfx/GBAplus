@@ -3,6 +3,8 @@
 #include <cstdint>
 
 class Bus;
+class Serializer;
+class Deserializer;
 
 class Timers {
 public:
@@ -11,6 +13,9 @@ public:
     void onRegisterWrite(uint32_t offset);
 
     void step(int cycles);
+
+    void serialize(Serializer& s) const;
+    void deserialize(Deserializer& d);
 
 private:
     struct Timer {

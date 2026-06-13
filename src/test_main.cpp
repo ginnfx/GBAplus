@@ -1,11 +1,16 @@
 #include <cstdio>
 #include <string>
 
+#include <cstdint>
+#include <vector>
+
 #include "APU.hpp"
 #include "ARM7TDMI.hpp"
 #include "Bus.hpp"
 #include "DMA.hpp"
+#include "Emulator.hpp"
 #include "PPU.hpp"
+#include "SaveState.hpp"
 #include "Timers.hpp"
 
 namespace {
@@ -218,6 +223,83 @@ void testThumbUnalignedLoad(Bus& bus) {
     CHECK((cpu.reg(2) & 0xFFFF) == 0xAABB,
           "low halfword is the one at 0x702 (got 0x%04X)",
           cpu.reg(2) & 0xFFFF);
+}
+
+void testSaveStateComponents() {
+    std::printf("Test: save-state component round-trip\n");
+    Bus busA;
+    ARM7TDMI cpuA(busA);
+    cpuA.reset();
+    busA.write32(0x02000100, 0xDEADBEEF);
+    busA.write16(0x03000200, 0x1234);
+    busA.write16(0x05000040, 0x7FFF);
+    busA.write16(0x06001000, 0xABCD);
+    busA.write16(0x07000010, 0x55AA);
+    cpuA.setReg(0, 0xCAFEBABE);
+    cpuA.setReg(13, 0x03007F00);
+
+    std::vector<uint8_t> buf;
+    Serializer s(buf);
+    busA.serialize(s);
+    cpuA.serialize(s);
+
+    Bus busB;
+    ARM7TDMI cpuB(busB);
+    Deserializer d(buf.data(), buf.size());
+    busB.deserialize(d);
+    cpuB.deserialize(d);
+
+    CHECK(d.ok(), "deserializer consumed the buffer cleanly");
+    CHECK(busB.read32(0x02000100) == 0xDEADBEEF, "EWRAM restored (0x%08X)",
+          busB.read32(0x02000100));
+    CHECK(busB.read16(0x03000200) == 0x1234, "IWRAM restored (0x%04X)",
+          busB.read16(0x03000200));
+    CHECK(busB.read16(0x05000040) == 0x7FFF, "palette restored (0x%04X)",
+          busB.read16(0x05000040));
+    CHECK(busB.read16(0x06001000) == 0xABCD, "VRAM restored (0x%04X)",
+          busB.read16(0x06001000));
+    CHECK(busB.read16(0x07000010) == 0x55AA, "OAM restored (0x%04X)",
+          busB.read16(0x07000010));
+    bool regsMatch = true;
+    for (int i = 0; i < 16; ++i) {
+        regsMatch = regsMatch && cpuA.reg(i) == cpuB.reg(i);
+    }
+    CHECK(regsMatch, "all 16 registers restored");
+    CHECK(cpuA.getCPSR() == cpuB.getCPSR(), "CPSR restored (0x%08X vs 0x%08X)",
+          cpuA.getCPSR(), cpuB.getCPSR());
+}
+
+void testSaveStateEmulator() {
+    std::printf("Test: emulator save-state round-trip\n");
+    Emulator emu;
+    emu.loadDemo();
+    for (int i = 0; i < 8; ++i) emu.runFrame();
+
+    std::vector<uint8_t> a;
+    emu.saveState(a);
+    CHECK(!a.empty(), "saveState produced bytes (%zu)", a.size());
+
+    CHECK(emu.loadState(a), "loadState accepted its own snapshot");
+    std::vector<uint8_t> b;
+    emu.saveState(b);
+    CHECK(a == b, "save/load/save is byte-identical (%zu vs %zu)", a.size(),
+          b.size());
+
+    emu.loadState(a);
+    for (int i = 0; i < 5; ++i) emu.runFrame();
+    std::vector<uint8_t> c1;
+    emu.saveState(c1);
+    emu.loadState(a);
+    for (int i = 0; i < 5; ++i) emu.runFrame();
+    std::vector<uint8_t> c2;
+    emu.saveState(c2);
+    CHECK(c1 == c2, "restored state replays deterministically");
+
+    std::vector<uint8_t> bad = a;
+    bad[0] ^= 0xFF;
+    CHECK(!emu.loadState(bad), "corrupt magic rejected");
+    std::vector<uint8_t> tooShort(3);
+    CHECK(!emu.loadState(tooShort), "truncated blob rejected");
 }
 
 void testDMAImmediate(Bus& bus) {
@@ -1498,6 +1580,8 @@ int main() {
         Bus bus;
         testThumbUnalignedLoad(bus);
     }
+    testSaveStateComponents();
+    testSaveStateEmulator();
     {
         Bus bus;
         testDMAImmediate(bus);
