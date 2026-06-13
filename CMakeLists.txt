@@ -123,6 +123,12 @@ endif()
 
 add_executable(gba_test_harness src/test_main.cpp)
 target_link_libraries(gba_test_harness PRIVATE gba_core)
+if(MSVC)
+    # Each test puts a full Bus (~400 KiB, mostly the 256 KiB EWRAM array) on
+    # the stack, and some hold two at once. That fits the 8 MiB stack on
+    # Unix but blows Windows' 1 MiB default, so reserve a generous 64 MiB.
+    target_link_options(gba_test_harness PRIVATE /STACK:67108864)
+endif()
 
 add_executable(gba_diag src/diag_main.cpp)
 target_link_libraries(gba_diag PRIVATE gba_core)
