@@ -562,9 +562,6 @@ void Frontend::drawLibrary() {
             // Games without a cover get a labelled placeholder tile.
             clicked = ImGui::Button(g.title.c_str(), ImVec2(COVER_W, COVER_H));
         }
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("%s", g.title.c_str());
-        }
         ImGui::PushTextWrapPos(COVER_W);
         ImGui::TextWrapped("%s", g.title.c_str());
         ImGui::PopTextWrapPos();
