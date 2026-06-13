@@ -17,8 +17,6 @@ Grab the latest build for your OS from the
 | macOS | `GBA-Emu-macOS.dmg` | Open the disk image and drag the app to Applications. First launch: right-click → Open (the app is ad-hoc signed, not notarized). |
 | Linux | `GBA-Emu-x86_64.AppImage` | `chmod +x` it and run; works across distros. |
 
-Each bundle is fully self-contained (SDL2 is statically linked) and has the
-in-app **Help > Check for Updates** feature built in.
 
 ## Features
 
