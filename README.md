@@ -42,6 +42,8 @@ full audio unit. a LOT of ts was done using documentation from GBATEK, ARM7TDMI 
 
 ## Building
 
+Use the releases tab, as that tends to be updated the most & has a GUI.
+
 GBAplus is portable C++20 with two dependencies: CMake (3.20+) and SDL2.
 
 ### macOS
@@ -124,12 +126,6 @@ For accuracy work, `--trace` writes `emu_trace.log` and
 as mGBA.
 
 ## Current state
-Most games boot. However some appear to work if given time/skipping logos (AOS)
+Most games boot. some appear to work if given time/skipping logos (AOS)
 Visual artifacts also are rare. Stuff like green flashes or weird artifacting for example. 
 
-## Accuracy notes
- Instruction timing is currently approximated (a flat cost per instruction
-rather than true S/N/I cycle counting), and bitmap mode 5 is not yet
-implemented. Affine backgrounds and sprites, the windows, mosaic, colour
-special effects, and Flash/EEPROM backup are all in. Hardware behavior
-follows the GBATEK documentation.
