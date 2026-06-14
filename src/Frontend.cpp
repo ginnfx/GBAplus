@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -103,37 +104,14 @@ std::string jsonField(const std::string& json, const char* key) {
     return out;
 }
 
-// Looks up the newest published release via the GitHub API, shelling out to
-// curl (present on macOS/Linux and Windows 10+) so we don't take on a TLS/HTTP
-// dependency. Best-effort: any failure (curl missing, offline, parse error)
-// returns false and the app is treated as up to date.
-bool queryLatestRelease(std::string& version, std::string& notes,
-                        std::string& url, std::string& assetUrl) {
+// Parses the GitHub "latest release" JSON payload. Fills version/notes/url and,
+// for this platform's asset, its direct download URL and byte size (0 if the
+// size field is absent). Returns false if the payload carries no tag_name (e.g.
+// an error blob or an empty download). Shared by the manual and startup checks.
+bool parseLatestRelease(const std::string& json, std::string& version,
+                        std::string& notes, std::string& url,
+                        std::string& assetUrl, long long& assetSize) {
     url = RELEASE_URL;
-    const char* cmd =
-        "curl -fsSL --max-time 6 "
-        "-H \"Accept: application/vnd.github+json\" "
-        "https://api.github.com/repos/ginnfx/GBAplus/releases/latest";
-#if defined(_WIN32)
-    std::FILE* pipe = _popen(cmd, "r");
-#else
-    std::FILE* pipe = popen(cmd, "r");
-#endif
-    if (pipe == nullptr) {
-        return false;
-    }
-    std::string json;
-    std::array<char, 4096> buf{};
-    size_t n;
-    while ((n = std::fread(buf.data(), 1, buf.size(), pipe)) > 0) {
-        json.append(buf.data(), n);
-    }
-#if defined(_WIN32)
-    _pclose(pipe);
-#else
-    pclose(pipe);
-#endif
-
     std::string tag = jsonField(json, "tag_name");
     if (tag.empty()) {
         return false;
@@ -169,8 +147,52 @@ bool queryLatestRelease(std::string& version, std::string& notes,
                 assetUrl = json.substr(q + 1, e - q - 1);
             }
         }
+        // The asset's numeric "size" field lives in the same object, between the
+        // name and the URL; it lets the UI show a real download progress bar.
+        const size_t sp = json.find("\"size\"", ap);
+        if (sp != std::string::npos) {
+            const size_t c = json.find(':', sp);
+            if (c != std::string::npos) {
+                assetSize = std::strtoll(json.c_str() + c + 1, nullptr, 10);
+            }
+        }
     }
     return true;
+}
+
+// Looks up the newest published release via the GitHub API, shelling out to
+// curl (present on macOS/Linux and Windows 10+) so we don't take on a TLS/HTTP
+// dependency. Best-effort: any failure (curl missing, offline, parse error)
+// returns false and the app is treated as up to date.
+bool queryLatestRelease(std::string& version, std::string& notes,
+                        std::string& url, std::string& assetUrl,
+                        long long& assetSize) {
+    url = RELEASE_URL;
+    const char* cmd =
+        "curl -fsSL --max-time 6 "
+        "-H \"Accept: application/vnd.github+json\" "
+        "https://api.github.com/repos/ginnfx/GBAplus/releases/latest";
+#if defined(_WIN32)
+    std::FILE* pipe = _popen(cmd, "r");
+#else
+    std::FILE* pipe = popen(cmd, "r");
+#endif
+    if (pipe == nullptr) {
+        return false;
+    }
+    std::string json;
+    std::array<char, 4096> buf{};
+    size_t n;
+    while ((n = std::fread(buf.data(), 1, buf.size(), pipe)) > 0) {
+        json.append(buf.data(), n);
+    }
+#if defined(_WIN32)
+    _pclose(pipe);
+#else
+    pclose(pipe);
+#endif
+
+    return parseLatestRelease(json, version, notes, url, assetUrl, assetSize);
 }
 
 std::string deriveSavPath(const std::string& romPath) {
@@ -203,16 +225,16 @@ std::string currentExePath() {
 #endif
 }
 
-// Spawns a detached helper that waits for this process to exit, downloads the
-// new bundle for this platform, replaces the installed app/exe/AppImage in
-// place, and relaunches it. Returns false if it could not be started (the
-// caller then falls back to opening the release page in a browser).
+// Spawns a detached helper that waits for this process to exit, then swaps the
+// already-downloaded bundle (localFile) into place over the installed
+// app/exe/AppImage and relaunches it. Returns false if it could not be started
+// (the caller then falls back to opening the release page in a browser).
 //
-// The download uses curl, which (unlike a browser) does not mark the file with
-// macOS quarantine, so the relaunched ad-hoc-signed app is not Gatekeeper-
-// blocked. Self-update on Linux is only attempted when running as an AppImage.
-bool launchUpdater(const std::string& assetUrl) {
-    if (assetUrl.empty()) return false;
+// localFile was fetched with curl, which (unlike a browser) does not mark the
+// file with macOS quarantine, so the relaunched ad-hoc-signed app is not
+// Gatekeeper-blocked. Self-update on Linux is only attempted as an AppImage.
+bool launchUpdater(const std::string& localFile) {
+    if (localFile.empty()) return false;
     namespace fs = std::filesystem;
 
 #if defined(__APPLE__)
@@ -225,23 +247,21 @@ bool launchUpdater(const std::string& assetUrl) {
     if (!f) return false;
     f << "#!/bin/sh\n"
       << "while kill -0 " << getpid() << " 2>/dev/null; do sleep 0.3; done\n"
-      << "DL=\"$(mktemp -t gbaupd)\"\n"
-      << "if curl -fsSL -o \"$DL\" '" << assetUrl << "'; then\n"
-      << "  MNT=\"$(mktemp -d)\"\n"
-      << "  if hdiutil attach -nobrowse -quiet -mountpoint \"$MNT\" \"$DL\"; then\n"
-      << "    APP=\"$(ls -d \"$MNT\"/*.app 2>/dev/null | head -1)\"\n"
-      << "    if [ -n \"$APP\" ] && cp -R \"$APP\" \"" << bundle << ".new\"; then\n"
-      << "      xattr -dr com.apple.quarantine \"" << bundle << ".new\" 2>/dev/null\n"
-      << "      rm -rf \"" << bundle << ".old\"\n"
-      << "      mv \"" << bundle << "\" \"" << bundle << ".old\" &&"
+      << "DL='" << localFile << "'\n"
+      << "MNT=\"$(mktemp -d)\"\n"
+      << "if hdiutil attach -nobrowse -quiet -mountpoint \"$MNT\" \"$DL\"; then\n"
+      << "  APP=\"$(ls -d \"$MNT\"/*.app 2>/dev/null | head -1)\"\n"
+      << "  if [ -n \"$APP\" ] && cp -R \"$APP\" \"" << bundle << ".new\"; then\n"
+      << "    xattr -dr com.apple.quarantine \"" << bundle << ".new\" 2>/dev/null\n"
+      << "    rm -rf \"" << bundle << ".old\"\n"
+      << "    mv \"" << bundle << "\" \"" << bundle << ".old\" &&"
          " mv \"" << bundle << ".new\" \"" << bundle << "\" &&"
          " rm -rf \"" << bundle << ".old\" ||"
          " mv \"" << bundle << ".old\" \"" << bundle << "\"\n"
-      << "    fi\n"
-      << "    hdiutil detach \"$MNT\" -quiet 2>/dev/null\n"
       << "  fi\n"
-      << "  rm -f \"$DL\"\n"
+      << "  hdiutil detach \"$MNT\" -quiet 2>/dev/null\n"
       << "fi\n"
+      << "rm -f \"$DL\"\n"
       << "open \"" << bundle << "\"\n";
     f.close();
     return std::system(("nohup sh '" + script + "' >/dev/null 2>&1 &").c_str()) == 0;
@@ -254,11 +274,9 @@ bool launchUpdater(const std::string& assetUrl) {
     if (!f) return false;
     f << "#!/bin/sh\n"
       << "while kill -0 " << getpid() << " 2>/dev/null; do sleep 0.3; done\n"
-      << "DL=\"$(mktemp)\"\n"
-      << "if curl -fsSL -o \"$DL\" '" << assetUrl << "'; then\n"
-      << "  chmod +x \"$DL\"\n"
-      << "  mv -f \"$DL\" \"" << appimg << "\"\n"
-      << "fi\n"
+      << "DL='" << localFile << "'\n"
+      << "chmod +x \"$DL\"\n"
+      << "mv -f \"$DL\" \"" << appimg << "\"\n"
       << "chmod +x \"" << appimg << "\"\n"
       << "\"" << appimg << "\" >/dev/null 2>&1 &\n";
     f.close();
@@ -275,16 +293,14 @@ bool launchUpdater(const std::string& assetUrl) {
       << ":wait\r\n"
       << "tasklist /FI \"PID eq " << pid << "\" 2>nul | find \"" << pid
       << "\" >nul && (ping -n 2 127.0.0.1 >nul & goto wait)\r\n"
-      << "curl -fsSL -o \"" << exe << ".new\" \"" << assetUrl << "\"\r\n"
-      << "if exist \"" << exe << ".new\" move /Y \"" << exe << ".new\" \""
-      << exe << "\" >nul\r\n"
+      << "move /Y \"" << localFile << "\" \"" << exe << "\" >nul\r\n"
       << "start \"\" \"" << exe << "\"\r\n"
       << "del \"%~f0\"\r\n";
     f.close();
     return std::system(("start \"\" /b cmd /c \"" + bat + "\"").c_str()) == 0;
 
 #else
-    (void)assetUrl;
+    (void)localFile;
     return false;
 #endif
 }
@@ -1057,6 +1073,10 @@ void Frontend::drawMenuBar() {
         if (ImGui::MenuItem("Check for Updates...")) {
             checkForUpdates();
         }
+        if (ImGui::MenuItem("Check on startup", nullptr,
+                            config.checkUpdatesOnStartup)) {
+            config.checkUpdatesOnStartup = !config.checkUpdatesOnStartup;
+        }
         ImGui::MenuItem("Version", CURRENT_VERSION, false, false);
         ImGui::EndMenu();
     }
@@ -1162,15 +1182,166 @@ void Frontend::drawSaveStatePrompt() {
 
 void Frontend::checkForUpdates() {
     std::string version, notes, url, assetUrl;
-    if (queryLatestRelease(version, notes, url, assetUrl) &&
+    long long assetSize = 0;
+    if (queryLatestRelease(version, notes, url, assetUrl, assetSize) &&
         versionNewer(CURRENT_VERSION, version)) {
         updateVersion = version;
         updateNotes = notes;
         updateUrl = url;
         updateAssetUrl = assetUrl;
+        updateTotalBytes = assetSize;
+        if (updatePhase != UP_DOWNLOADING) updatePhase = UP_NONE;
         showUpdateWindow = true;
     } else {
         setStatus("You're up to date (v" + std::string(CURRENT_VERSION) + ")");
+    }
+}
+
+// Kicks off the platform's download of updateAssetUrl as a detached process
+// that writes <path>.part, renames it to <path> on success, or leaves a
+// <path>.fail marker. The app keeps running while pollUpdateDownload watches.
+void Frontend::beginUpdateDownload() {
+    if (updateAssetUrl.empty()) {
+        // No matching asset for this platform: fall back to the release page.
+        SDL_OpenURL(updateUrl.c_str());
+        showUpdateWindow = false;
+        return;
+    }
+    namespace fs = std::filesystem;
+#if defined(_WIN32)
+    const char* ext = ".exe";
+#elif defined(__APPLE__)
+    const char* ext = ".dmg";
+#else
+    const char* ext = ".AppImage";
+#endif
+    const std::string dl =
+        (fs::temp_directory_path() / (std::string("gba_emu_update") + ext))
+            .string();
+    const std::string part = dl + ".part";
+    const std::string fail = dl + ".fail";
+    std::error_code ec;
+    fs::remove(dl, ec);
+    fs::remove(part, ec);
+    fs::remove(fail, ec);
+    updateDownloadPath = dl;
+
+#if defined(_WIN32)
+    const std::string bat =
+        (fs::temp_directory_path() / "gba_emu_download.bat").string();
+    std::ofstream f(bat);
+    if (!f) {
+        updatePhase = UP_FAILED;
+        return;
+    }
+    f << "@echo off\r\n"
+      << "curl -fsSL -o \"" << part << "\" \"" << updateAssetUrl << "\"\r\n"
+      << "if exist \"" << part << "\" ( move /Y \"" << part << "\" \"" << dl
+      << "\" >nul ) else ( echo fail> \"" << fail << "\" )\r\n"
+      << "del \"%~f0\"\r\n";
+    f.close();
+    std::system(("start \"\" /b cmd /c \"" + bat + "\"").c_str());
+#else
+    const std::string cmd =
+        "nohup sh -c 'curl -fsSL -o \"" + part + "\" \"" + updateAssetUrl +
+        "\" && mv -f \"" + part + "\" \"" + dl + "\" || : > \"" + fail +
+        "\"' >/dev/null 2>&1 &";
+    std::system(cmd.c_str());
+#endif
+    updatePhase = UP_DOWNLOADING;
+}
+
+// Promotes the download phase to READY/FAILED once the detached process leaves
+// the final file or the .fail marker behind. Cheap; called each frame.
+void Frontend::pollUpdateDownload() {
+    if (updatePhase != UP_DOWNLOADING) return;
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    if (fs::exists(updateDownloadPath, ec)) {
+        updatePhase = UP_READY;
+    } else if (fs::exists(updateDownloadPath + ".fail", ec)) {
+        updatePhase = UP_FAILED;
+    }
+}
+
+// Swaps the downloaded bundle in and relaunches. Quits cleanly (running=false)
+// rather than std::exit so the destructor still flushes SRAM and config.
+void Frontend::applyUpdate() {
+    if (launchUpdater(updateDownloadPath)) {
+        setStatus("Installing update; the app will relaunch...");
+        showUpdateWindow = false;
+        running = false;
+    } else {
+        // Unsupported install (e.g. not a .app bundle / not an AppImage).
+        SDL_OpenURL(updateUrl.c_str());
+        showUpdateWindow = false;
+    }
+}
+
+// Fires the launch-time update check as a detached curl that writes the API
+// response to a temp file (and a .done marker), so the window opens instantly
+// instead of waiting on the network. pollStartupUpdateCheck reads the result.
+void Frontend::startStartupUpdateCheck() {
+    if (!config.checkUpdatesOnStartup) return;
+    namespace fs = std::filesystem;
+    const std::string out =
+        (fs::temp_directory_path() / "gba_emu_latest.json").string();
+    const std::string done = out + ".done";
+    std::error_code ec;
+    fs::remove(out, ec);
+    fs::remove(done, ec);
+    startupCheckPath = out;
+#if defined(_WIN32)
+    const std::string bat =
+        (fs::temp_directory_path() / "gba_emu_check.bat").string();
+    std::ofstream f(bat);
+    if (!f) return;
+    f << "@echo off\r\n"
+      << "curl -fsSL --max-time 6 -H \"Accept: application/vnd.github+json\" "
+      << "https://api.github.com/repos/ginnfx/GBAplus/releases/latest -o \""
+      << out << "\"\r\n"
+      << "echo done> \"" << done << "\"\r\n"
+      << "del \"%~f0\"\r\n";
+    f.close();
+    std::system(("start \"\" /b cmd /c \"" + bat + "\"").c_str());
+#else
+    const std::string cmd =
+        "nohup sh -c 'curl -fsSL --max-time 6 -H \"Accept: "
+        "application/vnd.github+json\" "
+        "https://api.github.com/repos/ginnfx/GBAplus/releases/latest -o \"" +
+        out + "\"; : > \"" + done + "\"' >/dev/null 2>&1 &";
+    std::system(cmd.c_str());
+#endif
+    startupCheckPending = true;
+}
+
+// Once the detached check finishes (its .done marker appears), parse what curl
+// fetched with the shared parser and open the update window if it's newer.
+void Frontend::pollStartupUpdateCheck() {
+    if (!startupCheckPending) return;
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    if (!fs::exists(startupCheckPath + ".done", ec)) return;
+    startupCheckPending = false;
+
+    std::ifstream in(startupCheckPath, std::ios::binary);
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    const std::string json = ss.str();
+    fs::remove(startupCheckPath, ec);
+    fs::remove(startupCheckPath + ".done", ec);
+
+    std::string version, notes, url, assetUrl;
+    long long assetSize = 0;
+    if (parseLatestRelease(json, version, notes, url, assetUrl, assetSize) &&
+        versionNewer(CURRENT_VERSION, version)) {
+        updateVersion = version;
+        updateNotes = notes;
+        updateUrl = url;
+        updateAssetUrl = assetUrl;
+        updateTotalBytes = assetSize;
+        if (updatePhase != UP_DOWNLOADING) updatePhase = UP_NONE;
+        showUpdateWindow = true;
     }
 }
 
@@ -1194,27 +1365,68 @@ void Frontend::drawUpdateWindow() {
     ImGui::Separator();
     ImGui::TextWrapped("%s", updateNotes.c_str());
     ImGui::Separator();
-    if (ImGui::Button("Update now", ImVec2(130.0f, 0.0f))) {
-        // Download + replace + relaunch in place. The helper waits for us to
-        // exit, so quit cleanly (running = false) instead of std::exit so the
-        // destructor still flushes SRAM and config.
-        if (launchUpdater(updateAssetUrl)) {
-            setStatus("Downloading update; the app will relaunch...");
-            showUpdateWindow = false;
-            running = false;
+
+    pollUpdateDownload();
+
+    if (updatePhase == UP_DOWNLOADING) {
+        // Show real progress when we know the asset size, else an indeterminate
+        // bar labelled with the bytes received so far.
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        const auto got = fs::file_size(updateDownloadPath + ".part", ec);
+        const long long received = ec ? 0 : static_cast<long long>(got);
+        if (updateTotalBytes > 0) {
+            char overlay[48];
+            std::snprintf(overlay, sizeof(overlay), "%.1f / %.1f MB",
+                          received / (1024.0 * 1024.0),
+                          updateTotalBytes / (1024.0 * 1024.0));
+            const float frac = static_cast<float>(
+                static_cast<double>(received) /
+                static_cast<double>(updateTotalBytes));
+            ImGui::ProgressBar(frac, ImVec2(-1.0f, 0.0f), overlay);
         } else {
-            // No matching asset / unsupported install: fall back to the page.
+            char overlay[48];
+            std::snprintf(overlay, sizeof(overlay), "%.1f MB",
+                          received / (1024.0 * 1024.0));
+            ImGui::ProgressBar(-1.0f * static_cast<float>(ImGui::GetTime()),
+                               ImVec2(-1.0f, 0.0f), overlay);
+        }
+        ImGui::TextDisabled("Downloading the update; you can keep playing.");
+        if (ImGui::Button("View page", ImVec2(110.0f, 0.0f))) {
             SDL_OpenURL(updateUrl.c_str());
+        }
+    } else if (updatePhase == UP_READY) {
+        ImGui::TextColored(ImVec4(0.40f, 0.85f, 0.40f, 1.0f),
+                           "Download complete.");
+        if (ImGui::Button("Restart & install", ImVec2(150.0f, 0.0f))) {
+            applyUpdate();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Later", ImVec2(80.0f, 0.0f))) {
             showUpdateWindow = false;
         }
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("View page", ImVec2(110.0f, 0.0f))) {
-        SDL_OpenURL(updateUrl.c_str());
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Remind me later", ImVec2(130.0f, 0.0f))) {
-        showUpdateWindow = false;
+    } else if (updatePhase == UP_FAILED) {
+        ImGui::TextColored(ImVec4(0.95f, 0.40f, 0.40f, 1.0f),
+                           "Download failed. Check your connection.");
+        if (ImGui::Button("Retry", ImVec2(110.0f, 0.0f))) {
+            beginUpdateDownload();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("View page", ImVec2(110.0f, 0.0f))) {
+            SDL_OpenURL(updateUrl.c_str());
+        }
+    } else {  // UP_NONE
+        if (ImGui::Button("Update now", ImVec2(130.0f, 0.0f))) {
+            beginUpdateDownload();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("View page", ImVec2(110.0f, 0.0f))) {
+            SDL_OpenURL(updateUrl.c_str());
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Remind me later", ImVec2(130.0f, 0.0f))) {
+            showUpdateWindow = false;
+        }
     }
     ImGui::End();
 }
@@ -1330,9 +1542,12 @@ int Frontend::run() {
     const Uint64 perfFreq = SDL_GetPerformanceFrequency();
     counterAnchor = SDL_GetPerformanceCounter();
 
+    startStartupUpdateCheck();
+
     while (running) {
         const Uint64 frameStart = SDL_GetPerformanceCounter();
         handleEvents();
+        pollStartupUpdateCheck();
 
         if (emu && !paused && !showLibrary && !showSaveStatePrompt) {
             const int frames = fastForward ? FFWD_FRAMES : 1;

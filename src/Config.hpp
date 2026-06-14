@@ -39,6 +39,9 @@ struct Config {
     // Audio.
     int volume = 100;  // 0..100
 
+    // Updates.
+    bool checkUpdatesOnStartup = true;  // async "Check for Updates" at launch
+
     // Input: one SDL_Scancode per GbaKey.
     std::array<int, GK_COUNT> keyMap{};
 
