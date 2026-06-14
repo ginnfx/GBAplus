@@ -70,6 +70,13 @@ private:
 
     void checkForUpdates();
 
+    void beginUpdateDownload();
+    void pollUpdateDownload();
+    void applyUpdate();
+
+    void startStartupUpdateCheck();
+    void pollStartupUpdateCheck();
+
     SDL_Rect computeGameRect() const;
     void toggleFullscreen();
 
@@ -104,6 +111,14 @@ private:
     std::string updateNotes;
     std::string updateUrl;
     std::string updateAssetUrl;
+
+    enum UpdatePhase { UP_NONE, UP_DOWNLOADING, UP_READY, UP_FAILED };
+    int updatePhase = UP_NONE;
+    long long updateTotalBytes = 0;
+    std::string updateDownloadPath;
+
+    bool startupCheckPending = false;
+    std::string startupCheckPath;
 
     std::unique_ptr<Emulator> emu;
     std::FILE* traceFile = nullptr;

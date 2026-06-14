@@ -31,6 +31,8 @@ struct Config {
 
     int volume = 100;
 
+    bool checkUpdatesOnStartup = true;
+
     std::array<int, GK_COUNT> keyMap{};
 
     std::vector<std::string> gamesDirs;

@@ -75,6 +75,8 @@ bool Config::load(const std::string& path) {
         else if (key == "linear_filter")  linearFilter = toInt(0) != 0;
         else if (key == "shader")         shader = toInt(shader);
         else if (key == "volume")         volume = toInt(volume);
+        else if (key == "check_updates_on_startup")
+            checkUpdatesOnStartup = toInt(1) != 0;
         else if (key == "games_dir") {
             if (!val.empty()) addGamesDir(val);
         } else if (key == "recent") {
@@ -108,6 +110,7 @@ bool Config::save(const std::string& path) const {
     out << "linear_filter=" << (linearFilter ? 1 : 0) << "\n";
     out << "shader=" << shader << "\n";
     out << "volume=" << volume << "\n";
+    out << "check_updates_on_startup=" << (checkUpdatesOnStartup ? 1 : 0) << "\n";
     for (const std::string& dir : gamesDirs) {
         out << "games_dir=" << dir << "\n";
     }
