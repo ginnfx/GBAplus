@@ -1,12 +1,7 @@
 # GBAplus
 
 A WIP Game Boy Advance emulator written in C++ with SDL2.
-
-GBAplus emulates the ARM7TDMI CPU (both ARM and Thumb instruction sets), all
-PPU video modes (tiled and bitmap), 4-channel DMA, hardware timers, and the
-full APU. It runs as a desktop app (SDL2 + Dear ImGui) with a cover-art game
-library, save states, and display options. Hardware behaviour follows the
-GBATEK documentation and the ARM7TDMI Technical Reference Manual, with mGBA
+ It runs as a desktop app (SDL2 + Dear ImGui) with a cover-art game library, save states, and display options. Hardware behaviour follows the GBATEK documentation and the ARM7TDMI Technical Reference Manual, with mGBA
 as the reference emulator for accuracy cross-checks.
 
 ## Download
@@ -16,9 +11,11 @@ Grab the latest build for your OS from the
 
 | OS | File | Notes |
 |---|---|---|
-| Windows | `GBA-Emu-Windows-x64.exe` | Portable. just run it, nothing to install. |
+| Windows | `GBA-Emu-Windows-x64.exe` |
+just run it, nothing to install. |
 | macOS | `GBA-Emu-macOS.dmg` | Open the disk image and drag the app to Applications. First launch: right-click → Open (the app is ad-hoc signed, not notarized). |
-| Linux | `GBA-Emu-x86_64.AppImage` | `chmod +x` it and run; works across distros. |
+| Linux | `GBA-Emu-x86_64.AppImage` | 
+`chmod +x` it and run; works across distros. |
 
 
 ## Features
@@ -67,13 +64,9 @@ Grab the latest build for your OS from the
   timers, APU, and interrupt paths, plus a per-instruction trace mode for
   diffing execution against other emulators.
 
-## Building
+## Building (don't do this plz)
 
-Use the releases tab, as that tends to be updated the most & has a GUI.
-
-GBAplus is portable C++20. SDL2 is vendored and built from source (CMake
-`FetchContent`), so the only things you need are CMake (3.20+), a C++20
-compiler, and git. The resulting binaries link SDL2 statically and have no
+Use the releases tab. Plz. if you want to feel special the only things you need are CMake, a C++20 compiler, and git. The resulting binaries link SDL2 statically and have no
 runtime SDL dependency.
 
 ### macOS
@@ -111,22 +104,8 @@ The build defaults to an optimized Release configuration and produces
 (a headless diagnostic runner). Tagged pushes (`v*`) build the per-OS release
 bundles automatically via GitHub Actions.
 
-## Usage
 
-```sh
-./build/gba_emu game.gba                 # run a ROM
-./build/gba_emu game.gba --bios bios.bin # use a real BIOS image
-./build/gba_emu game.gba --trace         # write per-instruction CPU state
-./build/gba_emu --demo                   # no ROM: renders a test gradient
-```
-
-Save data is read from and written to `game.sav` next to the ROM.
-
-Launching without a ROM opens the library. Use **File > Add Games to
-Library...** to point GBAplus at one or more folders of `.gba` ROMs; box art
-is read from a `covers/` subfolder next to them (run
-`tools/fetch_covers.py <folder>` to download it). Click a cover to play, and
-if the game has save states it offers to resume from the latest one. Display
+Launching without a ROM opens the library. Use **File > Add Games to Library...** to point GBAplus at one or more folders of `.gba` ROMs; box art is read from a `covers/` subfolder next to them (run `tools/fetch_covers.py <folder>` to download it). Click a cover to play, and if the game has save states it offers to resume from the latest one. Display
 overlays live under **Video > Graphics Settings > Shaders**.
 
 ### Controls
@@ -151,53 +130,9 @@ A/B on the face buttons, L/R shoulders, Start, and Select on the Back button).
 Playback speed (0.25×–8×, unlimited), cheats, and the save-state browser live
 under the **Emulation** menu; GBA colour correction is under **Video**.
 
-## Testing
+## current state
 
-```sh
-cmake --build build --target gba_test_harness
-./build/gba_test_harness
-```
-
-The harness needs no SDL or display and exits non-zero on any failure,
-making it suitable for CI.
-
-For accuracy work, `--trace` writes `emu_trace.log` and
-`compare_logs.py` diffs it against a trace from a reference emulator such
-as mGBA.
-
-## Current state
-
-Most commercial GBA games boot and run. A handful need a moment to push past
-logo screens (notably Aria of Sorrow), but once past them they play correctly.
+Most commercial GBA games boot and run.
 Visible graphical glitches are rare; occasional green-flash artefacts appear in
-a small number of titles but do not affect gameplay.
+a small number of titles but do not affect gameplay. legacy of goku doesnt work but maybe ive just got a crappy rom. kirby works great but i just love kirby so maybe that's skewing my opinion
 
-## Planned features
-
-The items below are on the roadmap, roughly in priority order.
-
-**Accuracy**
-- S/N/I cycle classification — prerequisite for cycle-accurate timer IRQ cadence
-- Immediate mid-frame BG2X/Y reload — enables per-scanline Mode 7 effects
-- SOUNDBIAS emulation — minor output amplitude/rounding fix
-
-**User-facing**
-- Encrypted cheat-code import (GameShark / Action Replay v1/v2, CodeBreaker);
-  unencrypted direct-write codes are already supported
-- xBRZ / HQ2x software pixel upscaling
-
-## Accuracy notes
-
-All video modes (0–5) are implemented, including affine backgrounds and
-sprites, windows, mosaic, and colour special effects (alpha blend, brightness
-fades). All four backup types (SRAM, Flash 64 / 128 KiB, EEPROM) are
-supported, along with a serial-link stub and the GamePak RTC (S3511 over GPIO).
-
-Memory access timing is wait-state aware (WAITCNT-driven, per-access model) and
-models the ROM prefetch buffer: sequential cartridge reads are charged the
-S-cycle cost when a game enables prefetch (WAITCNT bit 14). Instruction timing
-still uses a flat 4-cycle cost rather than true S/N/I classification, so
-timer-IRQ-sensitive games may drift slightly.
-Mid-frame BG2X/Y writes take effect at the next frame boundary rather than
-immediately (affects per-scanline Mode 7 tricks). Hardware behaviour otherwise
-follows the GBATEK documentation.
