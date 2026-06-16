@@ -2,7 +2,7 @@
 
 A WIP Game Boy Advance emulator written in C++ with SDL2.
  It runs as a desktop app (SDL2 + Dear ImGui) with a cover-art game library, save states, and display options. Hardware behaviour follows the GBATEK documentation and the ARM7TDMI Technical Reference Manual, with mGBA
-as the reference emulator for accuracy cross-checks.
+as the reference emulator for accuracy 
 
 ## Download
 
@@ -14,28 +14,16 @@ Grab the latest build for your OS from the
 | Windows | `GBA-Emu-Windows-x64.exe` |
 just run it, nothing to install. |
 | macOS | `GBA-Emu-macOS.dmg` | Open the disk image and drag the app to Applications. First launch: right-click → Open (the app is ad-hoc signed, not notarized). |
-| Linux | `GBA-Emu-x86_64.AppImage` | `chmod +x` it and run; works across distros. |
-
+| Linux | `GBA-Emu-x86_64.AppImage` | `chmod +x` it and run; works across distros i think. |
 
 ## features
+i had a whole detailed explanation for each of the features but i think this does a better job:
 
-· CPU: ARM7TDMI featuring comprehensive register banking, ARM and Thumb decoders, a full range of barrel shifter and multiply operations, as well as MRS/MSR and BX state switching capabilities.
+It’s a GBA emulator that barely manages to deliver the core experience. Games might run smoothly, but i wouldnt count on it. i made this for legacy of goku but alas no solution yet. the graphics are only as good as they can be but i wouldnt reccomend fullscreen because obviously the resolution was meant to be 240x160. you do get scrolling, rotation, scaling, and effects like alpha blending and fades. The sound is accurate across all channels with stereo output, but it’s nothing to write home about. You don’t need a BIOS file to play.  The real-time clock works fine for games that need it, but it’s a basic feature that should be expected. Your progress is saved as .sav files. my computer sadly thinks they're SPSS files bc of the file extension :( and you can also drop a save state at any moment with a screenshot to pick up right where you left off, but it’s nothing revolutionary. there's also a cover art library that scans folders, keyboard and controller support, save slots, rewind, speed control (including a hold-to-fast-forward button), screenshot capture, and a bunch of display options like fullscreen, integer scaling, CRT filters, and auto-pause when you switch windows, why are you still reading this? go install mgba
 
-· Video: Scanline-accurate timing, tiled backgrounds with all layers capable of scrolling, flipping, and supporting 4bpp/8bpp, affine backgrounds, bitmap modes, sprites with 1D/2D mapping and affine sprites, windows mosaic, and colour effects such as alpha blending and fades.
+Cheats are easy to add with a built-in editor, but it’s not exactly groundbreaking, didnt work for the games i want to play. there’s even a trace mode to compare how it runs against other emulators so you can see the god forsaken c++ horribly be excecuted for the wimp that it is
 
-· Audio: Includes Square 1 with sweep, Square 2, programmable wave, and noise, all equipped with envelopes and length counters, alongside two Direct Sound FIFOs fed by DMA, clocked by timer overflows, and stereo output.
 
-· System: Comprises four DMA channels, four timers, a full interrupt controller, high-level BIOS IRQ emulation eliminating the need for a BIOS dump, and wait-state aware memory timing that accurately models the prefetch buffer for optimal cartridge code execution.
-
-· Cartridge hardware: Features a serial link stub to prevent link-aware games from hanging, along with real-time clock support.
-
-· Persistence: Supports battery-backed saves in .sav files and full save states with screenshots stored in numbered slots.
-
-· Frontend: Utilises SDL2 and Dear ImGui, includes a cover-art library that scans folders, supports keyboard and controller input, offers 10 save slots with a thumbnail browser, quick save/load functionality, rewind, speed control, hold-to-fast-forward, screenshot capture, display options (fullscreen, VSync scaling, filtering), colour correction, CRT/LCD overlays, auto-pause on focus loss, and native fonts.
-
-· Cheats: Supports GameShark/PAR codes with an in-app editor, applied to every frame saved adjacent to the ROM.
-
-· Tooling: Provides a standalone test harness for CPU, PPU, DMA, timers, APU, and interrupts, along with a trace mode for comparison against other emulators.
 
 ## Building (don't do this plz)
 
