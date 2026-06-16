@@ -17,51 +17,25 @@ just run it, nothing to install. |
 | Linux | `GBA-Emu-x86_64.AppImage` | `chmod +x` it and run; works across distros. |
 
 
-## Features
+## features
 
-- **CPU** — ARM7TDMI with the 3-stage pipeline modeled, full register
-  banking across all processor modes, ARM and Thumb decoders driven by
-  function-pointer dispatch tables, data processing with the complete
-  barrel shifter, single/halfword/signed/block data transfers, multiplies
-  (including the 64-bit long forms), MRS/MSR, and BX state switching.
-- **Video** — scanline-accurate timing (1232 cycles/line, 228 lines),
-  tiled backgrounds (all four layers, priorities, scrolling, flips,
-  4bpp/8bpp, all screen sizes), affine backgrounds (modes 1/2), all bitmap
-  modes (3/4/5) sampled through the BG2 affine transform, OAM sprites with
-  1D/2D mapping, affine sprites and per-pixel priority, the two windows plus
-  the OBJ window, mosaic, and the colour special effects (alpha blend and
-  brightness fades).
-- **Audio** — square 1 (with frequency sweep), square 2, programmable wave,
-  and noise channels with envelopes and length counters, plus both Direct
-  Sound FIFOs fed by DMA and clocked by timer overflows. Stereo 16-bit
-  output at 32768 Hz.
-- **System** — 4-channel DMA (immediate / VBlank / HBlank / sound FIFO
-  timing), 4 cascadable hardware timers, the full interrupt controller
-  (IE/IF/IME with write-1-to-clear acknowledge), and a high-level emulation
-  of the BIOS IRQ dispatch so games run without a BIOS dump (a real BIOS
-  image is also supported). Memory access timing is wait-state aware
-  (driven by WAITCNT) and models the ROM prefetch buffer, so straight-line
-  cartridge code runs at sequential-access speed.
-- **Cartridge hardware** — a serial-link stub (transfers complete as
-  "no partner connected" so link-aware games don't hang) and the GamePak
-  real-time clock (Seiko S3511 over GPIO) for titles that link `SIIRTC_V`.
-- **Persistence** — battery-backed saves written alongside the ROM as a
-  `.sav` file, covering SRAM, Flash (64/128 KiB), and serial EEPROM. Full
-  save states snapshot the whole machine to numbered slots, each embedding a
-  screenshot for the slot browser.
-- **Frontend** — an SDL2 + Dear ImGui desktop app with a cover-art game
-  library that can scan several folders at once, keyboard *and* game-controller
-  input, 10 save-state slots with a thumbnail browser (quick save/load plus a
-  prompt to resume from the latest save), rewind, a speed control
-  (0.25×–8× and unlimited) alongside hold-to-fast-forward, screenshot capture,
-  display options (fullscreen, VSync, integer scaling, linear filtering), GBA
-  LCD colour correction, scanline/CRT/LCD overlays, auto-pause on focus loss,
-  and native UI fonts (SF Pro on macOS, Roboto elsewhere).
-- **Cheats** — per-game GameShark / PAR direct-write codes (8/16/32-bit RAM
-  patches) with an in-app editor, applied each frame and saved next to the ROM.
-- **Tooling** — a standalone test harness covering the CPU, PPU, DMA,
-  timers, APU, and interrupt paths, plus a per-instruction trace mode for
-  diffing execution against other emulators.
+· CPU: ARM7TDMI featuring comprehensive register banking, ARM and Thumb decoders, a full range of barrel shifter and multiply operations, as well as MRS/MSR and BX state switching capabilities.
+
+· Video: Scanline-accurate timing, tiled backgrounds with all layers capable of scrolling, flipping, and supporting 4bpp/8bpp, affine backgrounds, bitmap modes, sprites with 1D/2D mapping and affine sprites, windows mosaic, and colour effects such as alpha blending and fades.
+
+· Audio: Includes Square 1 with sweep, Square 2, programmable wave, and noise, all equipped with envelopes and length counters, alongside two Direct Sound FIFOs fed by DMA, clocked by timer overflows, and stereo output.
+
+· System: Comprises four DMA channels, four timers, a full interrupt controller, high-level BIOS IRQ emulation eliminating the need for a BIOS dump, and wait-state aware memory timing that accurately models the prefetch buffer for optimal cartridge code execution.
+
+· Cartridge hardware: Features a serial link stub to prevent link-aware games from hanging, along with real-time clock support.
+
+· Persistence: Supports battery-backed saves in .sav files and full save states with screenshots stored in numbered slots.
+
+· Frontend: Utilises SDL2 and Dear ImGui, includes a cover-art library that scans folders, supports keyboard and controller input, offers 10 save slots with a thumbnail browser, quick save/load functionality, rewind, speed control, hold-to-fast-forward, screenshot capture, display options (fullscreen, VSync scaling, filtering), colour correction, CRT/LCD overlays, auto-pause on focus loss, and native fonts.
+
+· Cheats: Supports GameShark/PAR codes with an in-app editor, applied to every frame saved adjacent to the ROM.
+
+· Tooling: Provides a standalone test harness for CPU, PPU, DMA, timers, APU, and interrupts, along with a trace mode for comparison against other emulators.
 
 ## Building (don't do this plz)
 
