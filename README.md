@@ -11,8 +11,7 @@ Grab the latest build for your OS from the
 
 | OS | File | Notes |
 |---|---|---|
-| Windows | `GBA-Emu-Windows-x64.exe` |
-just run it, nothing to install. |
+| Windows | `GBA-Emu-Windows-x64.exe` |just run it, nothing to install. |
 | macOS | `GBA-Emu-macOS.dmg` | Open the disk image and drag the app to Applications. First launch: right-click → Open (the app is ad-hoc signed, not notarized). |
 | Linux | `GBA-Emu-x86_64.AppImage` | `chmod +x` it and run; works across distros i think. |
 
