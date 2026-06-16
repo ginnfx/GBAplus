@@ -74,7 +74,13 @@ bool Config::load(const std::string& path) {
         else if (key == "integer_scale")  integerScale = toInt(0) != 0;
         else if (key == "linear_filter")  linearFilter = toInt(0) != 0;
         else if (key == "shader")         shader = toInt(shader);
+        else if (key == "color_correct")  colorCorrect = toInt(0) != 0;
         else if (key == "volume")         volume = toInt(volume);
+        else if (key == "pause_on_focus_loss")
+            pauseOnFocusLoss = toInt(1) != 0;
+        else if (key == "rewind_enabled") rewindEnabled = toInt(1) != 0;
+        else if (key == "prefetch")       prefetch = toInt(1) != 0;
+        else if (key == "speed_index")    speedIndex = toInt(speedIndex);
         else if (key == "check_updates_on_startup")
             checkUpdatesOnStartup = toInt(1) != 0;
         else if (key == "games_dir") {
@@ -109,7 +115,12 @@ bool Config::save(const std::string& path) const {
     out << "integer_scale=" << (integerScale ? 1 : 0) << "\n";
     out << "linear_filter=" << (linearFilter ? 1 : 0) << "\n";
     out << "shader=" << shader << "\n";
+    out << "color_correct=" << (colorCorrect ? 1 : 0) << "\n";
     out << "volume=" << volume << "\n";
+    out << "pause_on_focus_loss=" << (pauseOnFocusLoss ? 1 : 0) << "\n";
+    out << "rewind_enabled=" << (rewindEnabled ? 1 : 0) << "\n";
+    out << "prefetch=" << (prefetch ? 1 : 0) << "\n";
+    out << "speed_index=" << speedIndex << "\n";
     out << "check_updates_on_startup=" << (checkUpdatesOnStartup ? 1 : 0) << "\n";
     for (const std::string& dir : gamesDirs) {
         out << "games_dir=" << dir << "\n";

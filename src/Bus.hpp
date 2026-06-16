@@ -71,6 +71,10 @@ public:
 
     uint32_t romHash() const;
 
+    void cheatWrite(uint32_t addr, uint32_t value, int width);
+
+    void setPrefetch(bool on) { prefetchModel = on; }
+
 private:
     static constexpr size_t BIOS_SIZE    = 0x4000;
     static constexpr size_t EWRAM_SIZE   = 0x40000;
@@ -124,11 +128,16 @@ private:
     uint8_t dispatchRead8(uint32_t addr);
     void dispatchWrite8(uint32_t addr, uint8_t value);
 
-    int accessCycles(uint32_t addr, int width) const;
+    int accessCycles(uint32_t addr, int width);
     void updateWaitstate();
     int64_t cycleAccum = 0;
     int ws0N = 0, ws0S = 0, ws1N = 0, ws1S = 0, ws2N = 0, ws2S = 0;
     int sramWait = 0;
+
+    bool prefetchEnabled = false;
+    bool prefetchModel = true;
+    uint32_t seqNextAddr = 0;
+    bool seqValid = false;
 
     void finishSerialTransfer();
 

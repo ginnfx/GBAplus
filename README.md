@@ -2,9 +2,12 @@
 
 A WIP Game Boy Advance emulator written in C++ with SDL2.
 
-GBAplus emulates the ARM7TDMI CPU (both ARM and Thumb instruction sets), the
-tiled and bitmap PPU video modes, 4-channel DMA, hardware timers, and the
-full audio unit. a LOT of ts was done using documentation from GBATEK, ARM7TDMI Technical Reference Manual and mGBA. It runs as a desktop app (SDL2 + Dear ImGui) with a cover-art game library, save states, and display options.
+GBAplus emulates the ARM7TDMI CPU (both ARM and Thumb instruction sets), all
+PPU video modes (tiled and bitmap), 4-channel DMA, hardware timers, and the
+full APU. It runs as a desktop app (SDL2 + Dear ImGui) with a cover-art game
+library, save states, and display options. Hardware behaviour follows the
+GBATEK documentation and the ARM7TDMI Technical Reference Manual, with mGBA
+as the reference emulator for accuracy cross-checks.
 
 ## Download
 
@@ -41,18 +44,25 @@ Grab the latest build for your OS from the
   (IE/IF/IME with write-1-to-clear acknowledge), and a high-level emulation
   of the BIOS IRQ dispatch so games run without a BIOS dump (a real BIOS
   image is also supported). Memory access timing is wait-state aware
-  (driven by WAITCNT) rather than a flat per-instruction cost.
+  (driven by WAITCNT) and models the ROM prefetch buffer, so straight-line
+  cartridge code runs at sequential-access speed.
 - **Cartridge hardware** — a serial-link stub (transfers complete as
   "no partner connected" so link-aware games don't hang) and the GamePak
   real-time clock (Seiko S3511 over GPIO) for titles that link `SIIRTC_V`.
 - **Persistence** — battery-backed saves written alongside the ROM as a
   `.sav` file, covering SRAM, Flash (64/128 KiB), and serial EEPROM. Full
-  save states snapshot the whole machine to numbered slots.
+  save states snapshot the whole machine to numbered slots, each embedding a
+  screenshot for the slot browser.
 - **Frontend** — an SDL2 + Dear ImGui desktop app with a cover-art game
-  library that can scan several folders at once, 10 save-state slots (quick
-  save/load plus a prompt to resume from the latest save), display options
-  (fullscreen, VSync, integer scaling, linear filtering), scanline/CRT/LCD
-  overlays, and native UI fonts (SF Pro on macOS, Roboto elsewhere).
+  library that can scan several folders at once, keyboard *and* game-controller
+  input, 10 save-state slots with a thumbnail browser (quick save/load plus a
+  prompt to resume from the latest save), rewind, a speed control
+  (0.25×–8× and unlimited) alongside hold-to-fast-forward, screenshot capture,
+  display options (fullscreen, VSync, integer scaling, linear filtering), GBA
+  LCD colour correction, scanline/CRT/LCD overlays, auto-pause on focus loss,
+  and native UI fonts (SF Pro on macOS, Roboto elsewhere).
+- **Cheats** — per-game GameShark / PAR direct-write codes (8/16/32-bit RAM
+  patches) with an in-app editor, applied each frame and saved next to the ROM.
 - **Tooling** — a standalone test harness covering the CPU, PPU, DMA,
   timers, APU, and interrupt paths, plus a per-instruction trace mode for
   diffing execution against other emulators.
@@ -130,9 +140,16 @@ overlays live under **Video > Graphics Settings > Shaders**.
 | Select | Backspace |
 | Pause | P |
 | Fast-forward | Tab (hold) |
+| Rewind | R (hold) |
 | Save / load state | F5 / F8 |
+| Screenshot | F12 |
 | Fullscreen | F11 |
 | Quit | Esc |
+
+A game controller is detected automatically when connected (D-pad/left stick,
+A/B on the face buttons, L/R shoulders, Start, and Select on the Back button).
+Playback speed (0.25×–8×, unlimited), cheats, and the save-state browser live
+under the **Emulation** menu; GBA colour correction is under **Video**.
 
 ## Testing
 
@@ -149,14 +166,38 @@ For accuracy work, `--trace` writes `emu_trace.log` and
 as mGBA.
 
 ## Current state
-Most games boot. some appear to work if given time/skipping logos (AOS)
-Visual artifacts also are rare. Stuff like green flashes or weird artifacting for example. 
+
+Most commercial GBA games boot and run. A handful need a moment to push past
+logo screens (notably Aria of Sorrow), but once past them they play correctly.
+Visible graphical glitches are rare; occasional green-flash artefacts appear in
+a small number of titles but do not affect gameplay.
+
+## Planned features
+
+The items below are on the roadmap, roughly in priority order.
+
+**Accuracy**
+- S/N/I cycle classification — prerequisite for cycle-accurate timer IRQ cadence
+- Immediate mid-frame BG2X/Y reload — enables per-scanline Mode 7 effects
+- SOUNDBIAS emulation — minor output amplitude/rounding fix
+
+**User-facing**
+- Encrypted cheat-code import (GameShark / Action Replay v1/v2, CodeBreaker);
+  unencrypted direct-write codes are already supported
+- xBRZ / HQ2x software pixel upscaling
 
 ## Accuracy notes
-Memory access timing is wait-state aware (driven by WAITCNT) but is a
-per-access model — it does not yet classify sequential vs non-sequential
-fetches or emulate the ROM prefetch buffer. All video modes (0-5, including
-affine backgrounds and sprites, windows, mosaic, and the colour special
-effects) and all four backup types (SRAM, Flash 64/128 KiB, EEPROM) are in,
-along with a serial-link stub and the GamePak RTC. Hardware behavior follows
-the GBATEK documentation.
+
+All video modes (0–5) are implemented, including affine backgrounds and
+sprites, windows, mosaic, and colour special effects (alpha blend, brightness
+fades). All four backup types (SRAM, Flash 64 / 128 KiB, EEPROM) are
+supported, along with a serial-link stub and the GamePak RTC (S3511 over GPIO).
+
+Memory access timing is wait-state aware (WAITCNT-driven, per-access model) and
+models the ROM prefetch buffer: sequential cartridge reads are charged the
+S-cycle cost when a game enables prefetch (WAITCNT bit 14). Instruction timing
+still uses a flat 4-cycle cost rather than true S/N/I classification, so
+timer-IRQ-sensitive games may drift slightly.
+Mid-frame BG2X/Y writes take effect at the next frame boundary rather than
+immediately (affects per-scanline Mode 7 tricks). Hardware behaviour otherwise
+follows the GBATEK documentation.

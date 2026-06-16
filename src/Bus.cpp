@@ -538,7 +538,18 @@ bool Bus::saveCartridgeData(const std::string& filepath) const {
     return file.good();
 }
 
-int Bus::accessCycles(uint32_t addr, int width) const {
+int Bus::accessCycles(uint32_t addr, int width) {
+    auto cartCost = [&](int n, int s) {
+        const bool seq =
+            prefetchModel && prefetchEnabled && seqValid && addr == seqNextAddr;
+        seqNextAddr = addr + static_cast<uint32_t>(width);
+        seqValid = true;
+        if (width == 4) {
+            return seq ? s + s : n + s;
+        }
+        return seq ? s : n;
+    };
+
     switch (addr >> 24) {
         case 0x00:
         case 0x03:
@@ -552,18 +563,25 @@ int Bus::accessCycles(uint32_t addr, int width) const {
             return width == 4 ? 2 : 1;
         case 0x08:
         case 0x09:
-            return width == 4 ? ws0N + ws0S : ws0N;
+            return cartCost(ws0N, ws0S);
         case 0x0A:
         case 0x0B:
-            return width == 4 ? ws1N + ws1S : ws1N;
+            return cartCost(ws1N, ws1S);
         case 0x0C:
         case 0x0D:
-            return width == 4 ? ws2N + ws2S : ws2N;
+            return cartCost(ws2N, ws2S);
         case 0x0E:
         case 0x0F:
             return sramWait;
         default:
             return 1;
+    }
+}
+
+void Bus::cheatWrite(uint32_t addr, uint32_t value, int width) {
+    for (int i = 0; i < width; ++i) {
+        dispatchWrite8(addr + static_cast<uint32_t>(i),
+                       static_cast<uint8_t>(value >> (8 * i)));
     }
 }
 
@@ -577,6 +595,7 @@ void Bus::updateWaitstate() {
     ws1S = 1 + (((w >> 7) & 1) ? 1 : 4);
     ws2N = 1 + firstWait[(w >> 8) & 3];
     ws2S = 1 + (((w >> 10) & 1) ? 1 : 8);
+    prefetchEnabled = ((w >> 14) & 1) != 0;
 }
 
 int Bus::consumeCycles() {

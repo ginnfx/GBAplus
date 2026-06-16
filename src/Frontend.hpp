@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <deque>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -27,27 +28,58 @@ public:
     int run();
 
 private:
+    struct CheatOp {
+        uint32_t addr;
+        uint32_t value;
+        int width;
+    };
+    struct Cheat {
+        std::string name;
+        std::string codes;
+        bool enabled = true;
+        std::vector<CheatOp> ops;
+    };
+
     bool initWindowAndRenderer();
     void initImGui();
     void initImGuiBackends();
     void shutdownImGuiBackends();
     bool createRenderer();
-    void destroyRenderer();
     void applyFilter();
     void loadFonts();
 
     void handleEvents();
     void handleKey(const SDL_Event& e, bool down);
     void emulateAndPace(const Uint64 frameStart);
-    void pumpAudio();
+    void stepEmuFrame(bool audible);
+    void pumpAudio(bool audible = true);
     void uploadFrame();
+    void applyColorCorrection();
     void render();
     void drawUI();
     void drawMenuBar();
     void drawOverlay();
     void drawGraphicsSettings();
     void drawSaveStatePrompt();
+    void drawSaveStateBrowser();
+    void drawCheatsWindow();
     void drawUpdateWindow();
+
+    void openGamepad(int joystickIndex);
+    void closeGamepad();
+    void pollGamepad();
+
+    void takeScreenshot();
+
+    void captureRewindSnapshot();
+    void doRewindStep();
+    void clearRewind();
+
+    std::string cheatPath() const;
+    void loadCheats();
+    void saveCheats() const;
+    void applyCheats();
+    std::vector<CheatOp> parseCheatCodes(const std::string& text) const;
 
     void openROM(const std::string& path, bool userSelected = true);
     void openRomDialog();
@@ -127,11 +159,28 @@ private:
     bool backendsReady = false;
 
     uint16_t keyState = 0x03FF;
+    uint16_t padState = 0x03FF;
     bool running = true;
     bool paused = false;
     bool fastForward = false;
+    bool rewinding = false;
+    bool windowFocused = true;
     int saveSlot = 0;
     float menuBarHeight = 0.0f;
+    double frameAccum = 0.0;
+
+    SDL_GameController* gamepad = nullptr;
+    SDL_JoystickID gamepadId = -1;
+
+    std::vector<uint32_t> ccFrame;
+
+    std::deque<std::vector<uint8_t>> rewindStates;
+    int rewindCounter = 0;
+
+    std::vector<Cheat> cheats;
+    bool showCheats = false;
+    bool showStateBrowser = false;
+    std::unordered_map<int, SDL_Texture*> slotThumbCache;
 
     std::string statusMessage;
     uint32_t statusExpiryMs = 0;

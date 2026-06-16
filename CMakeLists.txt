@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(gba_emu VERSION 0.3.3 LANGUAGES C CXX)
+project(gba_emu VERSION 0.4.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

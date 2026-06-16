@@ -50,6 +50,12 @@ public:
 
     void setTraceFile(std::FILE* file) { cpu.setTraceFile(file); }
 
+    void applyCheat(uint32_t addr, uint32_t value, int width) {
+        bus.cheatWrite(addr, value, width);
+    }
+
+    void setPrefetch(bool on) { bus.setPrefetch(on); }
+
     void saveState(std::vector<uint8_t>& out) const;
     bool loadState(const std::vector<uint8_t>& in);
 

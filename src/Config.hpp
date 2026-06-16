@@ -28,8 +28,14 @@ struct Config {
     bool integerScale  = false;
     bool linearFilter  = false;
     int  shader        = 0;
+    bool colorCorrect  = false;
 
     int volume = 100;
+
+    bool pauseOnFocusLoss = true;
+    bool rewindEnabled    = true;
+    bool prefetch         = true;
+    int  speedIndex       = 2;
 
     bool checkUpdatesOnStartup = true;
 
