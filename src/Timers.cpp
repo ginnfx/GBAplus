@@ -49,6 +49,7 @@ void Timers::step(int cycles) {
     for (int i = 0; i < 4; ++i) {
         Timer& t = timers[i];
         if (!t.enabled || t.cascade) {
+            // Cascade timers don't count cycles; they only tick on the timer below overflowing.
             continue;
         }
         t.subCount += cycles;

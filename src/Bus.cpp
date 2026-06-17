@@ -53,6 +53,7 @@ void Bus::writeIODirect16(uint32_t addr, uint16_t value) {
 }
 
 uint32_t Bus::mirrorVRAM(uint32_t addr) {
+    // VRAM is 96K but mirrors in a 128K window, so the top 32K folds back.
     uint32_t offset = addr & 0x1FFFF;
     if (offset >= 0x18000) {
         offset -= 0x8000;

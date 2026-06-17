@@ -11,6 +11,7 @@ constexpr uint32_t REG_KEYINPUT = 0x04000130;
 constexpr uint32_t VRAM_BASE    = 0x06000000;
 constexpr uint32_t EWRAM_BASE   = 0x02000000;
 
+// Escape hatch so a wedged frame can't spin forever; two frames is plenty.
 constexpr long long MAX_FRAME_CYCLES =
     2LL * PPU::CYCLES_SCANLINE * PPU::LINES_TOTAL;
 constexpr int HALT_STEP_CYCLES = 8;
@@ -61,6 +62,7 @@ void Emulator::runFrame() {
         cpu.step();
         int cycles = bus.consumeCycles();
         if (cycles <= 0) {
+            // CPU's halted and burning nothing, so nudge the clock ourselves.
             cycles = HALT_STEP_CYCLES;
         }
         ppu.step(cycles);
@@ -94,6 +96,7 @@ bool Emulator::loadState(const std::vector<uint8_t>& in) {
     d.pod(magic);
     d.pod(version);
     d.pod(hash);
+    // Reject anything that isn't ours: wrong format, old version, or a different ROM.
     if (!d.ok() || magic != STATE_MAGIC || version != STATE_VERSION ||
         hash != bus.romHash()) {
         return false;

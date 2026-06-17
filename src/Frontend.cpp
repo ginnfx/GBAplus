@@ -210,6 +210,8 @@ std::string currentExePath() {
 #endif
 }
 
+// We can't overwrite ourselves while running, so spit out a little script that
+// waits for us to quit, swaps the binary in place, and relaunches.
 bool launchUpdater(const std::string& localFile) {
     if (localFile.empty()) return false;
     namespace fs = std::filesystem;
