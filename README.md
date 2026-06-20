@@ -1,5 +1,5 @@
 # GBAplus
-<img width="624" height="624" alt="639D7F3B-44BD-484C-AA88-8F790C8A35C3" src="https://github.com/user-attachments/assets/464d0aa0-7821-4079-996f-ac52d346f4f5" />
+<img width="224" height="224" alt="639D7F3B-44BD-484C-AA88-8F790C8A35C3" src="https://github.com/user-attachments/assets/464d0aa0-7821-4079-996f-ac52d346f4f5" />
 
 
 My daughter chiyo is the app icon.
