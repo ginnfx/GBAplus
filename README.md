@@ -1,5 +1,9 @@
 # GBAplus
+<img width="1290" height="1294" alt="639D7F3B-44BD-484C-AA88-8F790C8A35C3" src="https://github.com/user-attachments/assets/c5844e49-181d-44f3-bcf5-fece5c5cd040" />
 
+
+
+My daughter chiyo is the app icon.
 A WIP Game Boy Advance emulator written in C++ with SDL2.
  It runs as a desktop app (SDL2 + Dear ImGui) with a cover-art game library, save states, and display options. Hardware behaviour follows the GBATEK documentation and the ARM7TDMI Technical Reference Manual, with mGBA
 as the reference emulator for accuracy 
